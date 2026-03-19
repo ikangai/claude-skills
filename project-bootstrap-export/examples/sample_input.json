@@ -1,0 +1,197 @@
+{
+  "project": {
+    "name": "Customer Portal Redesign",
+    "code": "CPR-2026",
+    "po_number": "PO-2026-04821",
+    "customer": "Acme Industries GmbH",
+    "start_date": "2026-04-01",
+    "end_date": "2026-12-31",
+    "currency": "EUR",
+    "total_value": 280000,
+    "business_unit": "Digital Solutions",
+    "project_manager": "Maria Schmidt",
+    "account_manager": "Thomas Weber",
+    "payment_terms_days": 30
+  },
+  "milestones": [
+    {
+      "id": "M01",
+      "name": "Upon Contract Signing",
+      "amount": 30000,
+      "planned_date": "2026-04-15",
+      "currency": "EUR"
+    },
+    {
+      "id": "M02",
+      "name": "Requirements Sign-off",
+      "amount": 50000,
+      "planned_date": "2026-06-30",
+      "currency": "EUR"
+    },
+    {
+      "id": "M03",
+      "name": "UAT Sign-off",
+      "amount": 80000,
+      "planned_date": "2026-09-30",
+      "currency": "EUR"
+    },
+    {
+      "id": "M04",
+      "name": "Go-Live",
+      "amount": 90000,
+      "planned_date": "2026-11-28",
+      "currency": "EUR"
+    },
+    {
+      "id": "M05",
+      "name": "Warranty Period End",
+      "amount": 30000,
+      "planned_date": "2026-12-31",
+      "currency": "EUR"
+    }
+  ],
+  "deliverables": [
+    {
+      "id": "D01",
+      "title": "Business Requirements Document",
+      "description": "Complete BRD covering all functional and non-functional requirements",
+      "milestone_id": "M02",
+      "planned_date": "2026-06-15",
+      "acceptance_condition": "Sign-off by customer product owner"
+    },
+    {
+      "id": "D02",
+      "title": "UX/UI Design Mockups",
+      "description": "Figma mockups for all portal screens, mobile and desktop",
+      "milestone_id": "M02",
+      "planned_date": "2026-06-25",
+      "acceptance_condition": "Design review approval"
+    },
+    {
+      "id": "D03",
+      "title": "UAT Test Results Report",
+      "description": "Full test execution report with pass/fail status for all test cases",
+      "milestone_id": "M03",
+      "planned_date": "2026-09-20",
+      "acceptance_condition": "All critical and high-severity test cases passed"
+    },
+    {
+      "id": "D04",
+      "title": "Production Deployment",
+      "description": "Application deployed to production environment with DNS cutover",
+      "milestone_id": "M04",
+      "planned_date": "2026-11-25",
+      "acceptance_condition": "Successful smoke test in production"
+    },
+    {
+      "id": "D05",
+      "title": "Technical Documentation",
+      "description": "Architecture docs, API reference, operations runbook",
+      "milestone_id": null,
+      "planned_date": "2026-11-30",
+      "acceptance_condition": null
+    }
+  ],
+  "resources": [
+    {
+      "id": "R01",
+      "name": "Anna Mueller",
+      "role": "Tech Lead",
+      "level": "Senior",
+      "allocation_percent": 80,
+      "start_date": "2026-04-01",
+      "end_date": "2026-12-31",
+      "person_days": 145,
+      "daily_rate": 950
+    },
+    {
+      "id": "R02",
+      "name": "Backend Developer",
+      "role": "Backend Developer",
+      "level": "Mid",
+      "allocation_percent": 100,
+      "start_date": "2026-05-01",
+      "end_date": "2026-11-30",
+      "person_days": 150,
+      "daily_rate": 750
+    },
+    {
+      "id": "R03",
+      "name": "Frontend Developer",
+      "role": "Frontend Developer",
+      "level": "Mid",
+      "allocation_percent": 100,
+      "start_date": "2026-05-01",
+      "end_date": "2026-11-30",
+      "person_days": 150,
+      "daily_rate": 750
+    },
+    {
+      "id": "R04",
+      "name": "UX Designer",
+      "role": "UX/UI Designer",
+      "level": "Senior",
+      "allocation_percent": 50,
+      "start_date": "2026-04-15",
+      "end_date": "2026-07-31",
+      "person_days": 38,
+      "daily_rate": 850
+    }
+  ],
+  "suppliers": [
+    {
+      "id": "S01",
+      "name": "CloudHost AG",
+      "description": "AWS hosting and managed Kubernetes for 12 months",
+      "amount": 24000,
+      "currency": "EUR",
+      "planned_date": "2026-05-01",
+      "payment_terms_days": 30
+    }
+  ],
+  "items": [
+    {
+      "id": "I01",
+      "name": "Contentful CMS License",
+      "vendor": "Contentful",
+      "category": "license",
+      "quantity": 1,
+      "unit_cost": 8400,
+      "unit_selling_price": 9600,
+      "currency": "EUR"
+    },
+    {
+      "id": "I02",
+      "name": "Datadog Monitoring",
+      "vendor": "Datadog",
+      "category": "software",
+      "quantity": 1,
+      "unit_cost": 3600,
+      "unit_selling_price": 4200,
+      "currency": "EUR"
+    }
+  ],
+  "special_conditions": [
+    {
+      "type": "retention",
+      "description": "10% of each milestone payment held until warranty period completion (M05)",
+      "percentage": 10,
+      "amount": null
+    },
+    {
+      "type": "penalty",
+      "description": "0.5% per week late delivery penalty, capped at 5% of total contract value",
+      "percentage": 0.5,
+      "amount": null
+    }
+  ],
+  "extraction_notes": {
+    "missing_fields": [
+      "R02 and R03 are role placeholders — specific persons not yet assigned"
+    ],
+    "ambiguities": [
+      "M05 'Warranty Period End' amount derived from 10% retention across M01-M04"
+    ],
+    "data_quality_issues": []
+  }
+}
