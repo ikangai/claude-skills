@@ -7,6 +7,7 @@ A collection of skills for Claude Code.
 | Skill | Description |
 |---|---|
 | [project-bootstrap-export](./project-bootstrap-export/) | Extracts structured project data from SOW, PO, and cost sheet documents, then exports to MS Project XML (with Jira and Excel planned). |
+| [diary](./diary/) | Maintains a per-project development diary capturing the narrative of how code got built — what was tried, what broke, where direction changed, what was learned. |
 
 ## Installation
 
