@@ -1,0 +1,421 @@
+<!-- kanban-body.html — spliced into rewritable.html's INLINE_DOC literal.
+     This is the document the rwa runtime renders. The runtime supplies the
+     base palette and typography (see seeds/rewritable.html); this body
+     adds kanban-specific layout and the inline card renderer/dragger.
+
+     Card data lives in the <script type="application/json"> block. Inline
+     JS reads it, renders columns, handles drag-and-drop, and updates the
+     JSON on drop. ⌘S (rwa commit) persists the document back into the file.
+
+     The UI scaffolding (column headers, the script that renders) is wrapped
+     in rwa-locked so the agent cannot trample it on /-instructions. The
+     editable region is the cards JSON. -->
+
+<style>
+/* === kanban-product layout — sits on top of rwa's content stylesheet === */
+:where(#rwa-doc-mount) article{max-width:none;margin:24px 24px 80px;padding:0;}
+:where(#rwa-doc-mount) h1.kb-title{font-size:1.25rem;font-weight:600;letter-spacing:-.01em;margin:0 0 4px;color:var(--gray-900);}
+:where(#rwa-doc-mount) .kb-sub{font-family:var(--font-mono);font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--gray-500);margin:0 0 24px;}
+
+.kb-board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;align-items:start;}
+@media (max-width: 960px){.kb-board{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media (max-width: 560px){.kb-board{grid-template-columns:1fr;}}
+
+.kb-col{background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius-sm);padding:12px;min-height:120px;display:flex;flex-direction:column;gap:8px;transition:background .15s,border-color .15s;}
+.kb-col.is-dragover{background:var(--gray-100);border-color:var(--gray-400);}
+.kb-col-head{display:flex;justify-content:space-between;align-items:center;padding:2px 4px 6px;border-bottom:1px solid var(--gray-200);}
+.kb-col-name{font-family:var(--font-mono);font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--gray-600);}
+.kb-col-count{font-family:var(--font-mono);font-size:10px;color:var(--gray-400);background:var(--white);padding:2px 8px;border-radius:100px;border:1px solid var(--gray-200);}
+
+.kb-card{background:var(--white);border:1px solid var(--gray-200);border-radius:var(--radius-sm);padding:10px 12px;cursor:grab;transition:border-color .15s,box-shadow .15s,transform .15s;display:flex;flex-direction:column;gap:6px;border-left-width:3px;}
+.kb-card:hover{border-color:var(--gray-300);box-shadow:0 2px 8px rgba(0,0,0,0.04);}
+.kb-card:active{cursor:grabbing;}
+.kb-card.is-dragging{opacity:.4;transform:scale(.98);}
+.kb-card[data-priority="high"]{border-left-color:var(--red);}
+.kb-card[data-priority="medium"]{border-left-color:var(--yellow);}
+.kb-card[data-priority="low"]{border-left-color:var(--blue);}
+.kb-card[data-priority="none"]{border-left-color:var(--gray-300);}
+
+.kb-card-title{font-size:13px;font-weight:500;color:var(--gray-900);line-height:1.35;word-wrap:break-word;}
+.kb-card-desc{font-size:12px;color:var(--gray-600);line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+.kb-card-meta{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:2px;}
+
+.kb-chip{font-family:var(--font-mono);font-size:9px;letter-spacing:.3px;background:var(--gray-100);color:var(--gray-600);padding:2px 7px;border-radius:100px;text-transform:lowercase;}
+.kb-chip.kb-chip-agent{background:var(--gray-900);color:var(--white);text-transform:none;letter-spacing:.5px;}
+.kb-chip.kb-chip-id{background:var(--white);border:1px solid var(--gray-200);color:var(--gray-400);font-size:9px;}
+
+.kb-empty{font-family:var(--font-mono);font-size:10px;color:var(--gray-300);text-align:center;padding:16px 8px;letter-spacing:.5px;}
+
+.kb-help{margin:32px 0 0;padding:16px 18px;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:11px;color:var(--gray-600);line-height:1.7;}
+.kb-help b{font-weight:600;color:var(--gray-900);}
+.kb-help code{background:var(--white);border:1px solid var(--gray-200);padding:1px 6px;border-radius:4px;color:var(--gray-800);font-size:10.5px;}
+</style>
+
+<article>
+
+<!-- rwa:frozen:begin kanban-header -->
+<h1 class="kb-title" data-rwa-id="kbttl001">Kanban</h1>
+<p class="kb-sub" data-rwa-id="kbsub001">project board · ⌘S commits</p>
+<!-- rwa:frozen:end kanban-header -->
+
+<!-- rwa:frozen:begin kanban-board -->
+<div class="kb-board">
+  <div class="kb-col" data-status="todo">
+    <div class="kb-col-head"><span class="kb-col-name">To Do</span><span class="kb-col-count" data-count="todo">0</span></div>
+    <div class="kb-col-body" data-drop="todo"></div>
+  </div>
+  <div class="kb-col" data-status="in_progress">
+    <div class="kb-col-head"><span class="kb-col-name">In Progress</span><span class="kb-col-count" data-count="in_progress">0</span></div>
+    <div class="kb-col-body" data-drop="in_progress"></div>
+  </div>
+  <div class="kb-col" data-status="review">
+    <div class="kb-col-head"><span class="kb-col-name">Review</span><span class="kb-col-count" data-count="review">0</span></div>
+    <div class="kb-col-body" data-drop="review"></div>
+  </div>
+  <div class="kb-col" data-status="done">
+    <div class="kb-col-head"><span class="kb-col-name">Done</span><span class="kb-col-count" data-count="done">0</span></div>
+    <div class="kb-col-body" data-drop="done"></div>
+  </div>
+</div>
+<!-- rwa:frozen:end kanban-board -->
+
+<!-- Cards live here. The agent and CLI both edit this JSON; the inline JS
+     below reads it on every render and rebuilds the column DOM from it.
+     Format: JSON array of card objects (see references/card-schema.md).
+     Markers below are exact substrings that scripts/rwa_splice.py uses
+     to locate this region — do not change them. -->
+<script type="application/json" id="kanban-cards">
+[]
+</script>
+
+<!-- rwa:frozen:begin kanban-runtime -->
+<script>
+(function () {
+  if (window.__kb_init) return; // re-entry guard; renderDoc re-runs scripts
+  window.__kb_init = true;
+
+  const STATUSES = ['todo','in_progress','review','done'];
+  const root = document;
+
+  function readCards () {
+    const el = root.getElementById('kanban-cards');
+    if (!el) return [];
+    try { return JSON.parse(el.textContent || '[]'); }
+    catch (e) { console.warn('kanban: malformed cards JSON', e); return []; }
+  }
+
+  function writeCards (cards) {
+    const el = root.getElementById('kanban-cards');
+    if (!el) return;
+    el.textContent = '\n' + JSON.stringify(cards, null, 2) + '\n';
+  }
+
+  function escHTML (s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function shortId (s) {
+    if (!s) return '';
+    // last segment of YYYY-MM-DD-slug ids, capped
+    const m = String(s).match(/^\d{4}-\d{2}-\d{2}-(.+)$/);
+    const tail = m ? m[1] : String(s);
+    return tail.length > 22 ? tail.slice(0,22) + '…' : tail;
+  }
+
+  function cardEl (c) {
+    const pri = c.priority && ['high','medium','low'].includes(c.priority) ? c.priority : 'none';
+    const tags = Array.isArray(c.tags) ? c.tags : [];
+    const desc = c.description ? `<div class="kb-card-desc">${escHTML(c.description)}</div>` : '';
+    const meta = [];
+    if (c.assigned_to) meta.push(`<span class="kb-chip kb-chip-agent">${escHTML(c.assigned_to)}</span>`);
+    for (const t of tags.slice(0,4)) meta.push(`<span class="kb-chip">${escHTML(t)}</span>`);
+    meta.push(`<span class="kb-chip kb-chip-id">${escHTML(shortId(c.id))}</span>`);
+    return `<div class="kb-card" draggable="true" data-id="${escHTML(c.id)}" data-priority="${pri}">
+      <div class="kb-card-title">${escHTML(c.title || '(untitled)')}</div>
+      ${desc}
+      <div class="kb-card-meta">${meta.join('')}</div>
+    </div>`;
+  }
+
+  function render () {
+    const cards = readCards();
+    const byCol = { todo:[], in_progress:[], review:[], done:[] };
+    for (const c of cards) {
+      const s = STATUSES.includes(c.status) ? c.status : 'todo';
+      byCol[s].push(c);
+    }
+    for (const s of STATUSES) {
+      const body = root.querySelector(`.kb-col-body[data-drop="${s}"]`);
+      const count = root.querySelector(`.kb-col-count[data-count="${s}"]`);
+      if (!body) continue;
+      const list = byCol[s];
+      body.innerHTML = list.length
+        ? list.map(cardEl).join('')
+        : `<div class="kb-empty">— empty —</div>`;
+      if (count) count.textContent = String(list.length);
+    }
+    bindDrag();
+  }
+
+  function bindDrag () {
+    root.querySelectorAll('.kb-card').forEach(el => {
+      el.addEventListener('dragstart', onDragStart);
+      el.addEventListener('dragend', onDragEnd);
+    });
+    root.querySelectorAll('.kb-col').forEach(col => {
+      col.addEventListener('dragover', onDragOver);
+      col.addEventListener('dragleave', onDragLeave);
+      col.addEventListener('drop', onDrop);
+    });
+  }
+
+  let dragId = null;
+  function onDragStart (e) {
+    dragId = e.currentTarget.getAttribute('data-id');
+    e.currentTarget.classList.add('is-dragging');
+    try { e.dataTransfer.setData('text/plain', dragId); } catch (_) {}
+    e.dataTransfer.effectAllowed = 'move';
+  }
+  function onDragEnd (e) {
+    e.currentTarget.classList.remove('is-dragging');
+    dragId = null;
+    root.querySelectorAll('.kb-col.is-dragover').forEach(c => c.classList.remove('is-dragover'));
+  }
+  function onDragOver (e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    e.currentTarget.classList.add('is-dragover');
+  }
+  function onDragLeave (e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      e.currentTarget.classList.remove('is-dragover');
+    }
+  }
+  function onDrop (e) {
+    e.preventDefault();
+    const col = e.currentTarget;
+    col.classList.remove('is-dragover');
+    const newStatus = col.getAttribute('data-status');
+    const id = dragId || (e.dataTransfer && e.dataTransfer.getData('text/plain'));
+    if (!id || !STATUSES.includes(newStatus)) return;
+    const cards = readCards();
+    const c = cards.find(x => x.id === id);
+    if (!c || c.status === newStatus) return;
+    c.status = newStatus;
+    if (newStatus === 'in_progress' && !c.claimed_at) {
+      c.claimed_at = new Date().toISOString();
+    }
+    writeCards(cards);
+    render();
+    // Ask the runtime to mark dirty so the user sees a ⌘S nudge.
+    if (window.runtime && typeof window.runtime.modify === 'function') {
+      // no-op: leave commit to user. Just touch status if exposed.
+    }
+  }
+
+  // ─── live sync with the file on disk ─────────────────────────────────
+  // The rwa runtime hydrates the DOM from IndexedDB on every page load,
+  // ignoring INLINE_DOC after first hydration. That means CLI writes to
+  // board.html are invisible to an open browser tab until IDB is cleared.
+  //
+  // We close that loop here: poll the file on disk every ~2.5s, parse
+  // out the kanban-cards JSON inside the INLINE_DOC literal, and
+  // three-way-merge against (a) what we saw last poll and (b) what's in
+  // the current DOM. CLI-side adds, deletes, claims, moves, and notes
+  // appear in the open tab without manual intervention. Browser-side
+  // drag changes (status, claimed_at) are preserved across syncs.
+
+  const SYNC_POLL_MS = 2500;
+  let lastSeenDisk = null;            // cards array, last successfully fetched
+  let syncInFlight = false;
+
+  function extractDiskCards (fileText) {
+    // Locate INLINE_DOC template literal in the bootstrap.
+    const marker = 'const INLINE_DOC = `';
+    const i = fileText.indexOf(marker);
+    if (i < 0) return null;
+    const cs = i + marker.length;
+    let j = cs;
+    while (j < fileText.length) {
+      if (fileText[j] === '\\') { j += 2; continue; }
+      if (fileText[j] === '`') break;
+      j++;
+    }
+    if (j >= fileText.length) return null;
+
+    // Reverse escapeTL (in reverse application order). Order matters:
+    //   </script first, then ${, then `, then backslash last.
+    let lit = fileText.slice(cs, j);
+    lit = lit.replace(/<\\\/script/gi, '</script');
+    lit = lit.replace(/\\\$\{/g, '${');
+    lit = lit.replace(/\\`/g, '`');
+    lit = lit.replace(/\\\\/g, '\\');
+
+    // Now `lit` is the runtime-eval'd INLINE_DOC string. Find the
+    // kanban-cards script content inside it.
+    const open = '<script type="application/json" id="kanban-cards">';
+    const ki = lit.indexOf(open);
+    if (ki < 0) return null;
+    const ks = ki + open.length;
+    const ke = lit.indexOf('</script>', ks);
+    if (ke < 0) return null;
+    const body = lit.slice(ks, ke).trim();
+    if (!body) return [];
+    try { return JSON.parse(body); }
+    catch (e) { return null; }
+  }
+
+  function eqShallow (a, b) {
+    // Deep-equal via JSON.stringify is fine for card data — no
+    // functions, no Date objects, no circular refs.
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  function mergeDiskIntoBrowser (oldDisk, newDisk, browser) {
+    // Three-way merge keyed by card id.
+    //   oldDisk:  what was on disk at last sync ("merge base")
+    //   newDisk:  what's on disk now
+    //   browser:  what's in the DOM (IDB-derived + local drags)
+    //
+    // Rules:
+    //   - Disk added a card (in newDisk, not in oldDisk) → take it
+    //   - Disk removed a card (in oldDisk, not in newDisk) → drop it
+    //   - Both have it:
+    //       For status/claimed_at: if browser changed it locally
+    //         (browser != oldDisk on those fields), keep browser's;
+    //         else use disk's.
+    //       For every other field: use disk's.
+    //   - Browser has a card not on disk and not in oldDisk
+    //     (shouldn't happen — browser doesn't create cards — but if it
+    //     does, keep it).
+    const oldMap = new Map((oldDisk || []).map(c => [c.id, c]));
+    const newMap = new Map((newDisk || []).map(c => [c.id, c]));
+    const brMap  = new Map((browser  || []).map(c => [c.id, c]));
+
+    const allIds = new Set([...newMap.keys(), ...brMap.keys()]);
+    const merged = [];
+    const addedIds = [];
+
+    for (const id of allIds) {
+      const oldC = oldMap.get(id);
+      const newC = newMap.get(id);
+      const brC  = brMap.get(id);
+
+      // Disk deleted this card (oldDisk had it, newDisk doesn't).
+      if (oldC && !newC) {
+        // Drop it. (We don't try to detect "user is editing this in
+        // browser" — deletes from CLI are deliberate.)
+        continue;
+      }
+
+      // Disk added a brand-new card.
+      if (newC && !oldC) {
+        merged.push(newC);
+        if (!brC) addedIds.push(id);
+        continue;
+      }
+
+      // Both have it. Three-way merge per field.
+      if (newC && oldC && brC) {
+        const result = Object.assign({}, newC);
+        // Status: browser change wins if it differs from oldDisk.
+        if (brC.status !== oldC.status) result.status = brC.status;
+        // claimed_at: ditto.
+        if (brC.claimed_at !== oldC.claimed_at) result.claimed_at = brC.claimed_at;
+        merged.push(result);
+        continue;
+      }
+
+      // Only in browser (unusual: browser doesn't create cards).
+      if (brC && !newC && !oldC) {
+        merged.push(brC);
+        continue;
+      }
+
+      // Anything else (e.g. only in newDisk and oldDisk but not browser):
+      // browser somehow dropped it. Take disk's version.
+      if (newC) merged.push(newC);
+    }
+
+    // Preserve the original disk order roughly: cards on disk first in
+    // their disk order, then any browser-only stragglers.
+    const finalById = new Map(merged.map(c => [c.id, c]));
+    const ordered = [];
+    for (const c of (newDisk || [])) {
+      const m = finalById.get(c.id);
+      if (m) { ordered.push(m); finalById.delete(c.id); }
+    }
+    for (const c of merged) {
+      if (finalById.has(c.id)) { ordered.push(c); finalById.delete(c.id); }
+    }
+    return { merged: ordered, addedIds };
+  }
+
+  async function syncFromDisk () {
+    if (syncInFlight) return;
+    if (document.hidden) return;
+    syncInFlight = true;
+    try {
+      const res = await fetch(window.location.href, { cache: 'no-store' });
+      if (!res.ok) return;
+      const text = await res.text();
+      const diskCards = extractDiskCards(text);
+      if (!diskCards) return;
+
+      // First successful poll: just record the baseline, nothing to merge.
+      if (lastSeenDisk === null) { lastSeenDisk = diskCards; return; }
+
+      // Disk hasn't changed since last poll. Nothing to do.
+      if (eqShallow(diskCards, lastSeenDisk)) return;
+
+      const browserCards = readCards();
+      const { merged, addedIds } = mergeDiskIntoBrowser(lastSeenDisk, diskCards, browserCards);
+
+      // If the merge result equals what's already in the browser, just
+      // advance the baseline — no DOM thrash.
+      if (eqShallow(merged, browserCards)) {
+        lastSeenDisk = diskCards;
+        return;
+      }
+
+      writeCards(merged);
+      render();
+      lastSeenDisk = diskCards;
+
+      // Subtle: flash newly-added cards so the user sees them appear.
+      for (const id of addedIds) {
+        const el = root.querySelector('.kb-card[data-id="' + cssEscape(id) + '"]');
+        if (el) {
+          el.classList.add('rwa-frag-pulse');
+          setTimeout(() => el.classList.remove('rwa-frag-pulse'), 1600);
+        }
+      }
+    } catch (e) {
+      // Network/parse/permission failure: skip. We'll try again next tick.
+    } finally {
+      syncInFlight = false;
+    }
+  }
+
+  function cssEscape (s) {
+    if (window.CSS && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, c => '\\' + c.charCodeAt(0).toString(16) + ' ');
+  }
+
+  // Kick off sync. Initial render first so the user sees something
+  // immediately; then poll.
+  render();
+  syncFromDisk();
+  setInterval(syncFromDisk, SYNC_POLL_MS);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) syncFromDisk(); });
+})();
+</script>
+<!-- rwa:frozen:end kanban-runtime -->
+
+<aside class="kb-help">
+  <b>Drag</b> cards between columns to change status · <b>⌘S</b> commits to file · cards created via <code>kanban add</code> from your terminal
+</aside>
+
+</article>
