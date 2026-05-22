@@ -246,9 +246,12 @@
     if (j >= fileText.length) return null;
 
     // Reverse escapeTL (in reverse application order). Order matters:
-    //   </script first, then ${, then `, then backslash last.
+    //   <\/script first, then ${, then `, then backslash last.
+    // (Backslashes in source above and below are deliberate: they keep the
+    //  HTML parser from seeing a real </script> inside this inline script
+    //  when innerHTML rebuilds the doc. JS string escape collapses them.)
     let lit = fileText.slice(cs, j);
-    lit = lit.replace(/<\\\/script/gi, '</script');
+    lit = lit.replace(/<\\\/script/gi, '<\/script');
     lit = lit.replace(/\\\$\{/g, '${');
     lit = lit.replace(/\\`/g, '`');
     lit = lit.replace(/\\\\/g, '\\');
@@ -259,7 +262,7 @@
     const ki = lit.indexOf(open);
     if (ki < 0) return null;
     const ks = ki + open.length;
-    const ke = lit.indexOf('</script>', ks);
+    const ke = lit.indexOf('<\/script>', ks);
     if (ke < 0) return null;
     const body = lit.slice(ks, ke).trim();
     if (!body) return [];
