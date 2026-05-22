@@ -248,8 +248,9 @@
     // Reverse escapeTL (in reverse application order). Order matters:
     //   <\/script first, then ${, then `, then backslash last.
     // (Backslashes in source above and below are deliberate: they keep the
-    //  HTML parser from seeing a real </script> inside this inline script
-    //  when innerHTML rebuilds the doc. JS string escape collapses them.)
+    //  HTML parser from seeing a literal script end-tag inside this inline
+    //  script when innerHTML rebuilds the doc. JS string escape collapses
+    //  the backslashes so the runtime values are unchanged.)
     let lit = fileText.slice(cs, j);
     lit = lit.replace(/<\\\/script/gi, '<\/script');
     lit = lit.replace(/\\\$\{/g, '${');
