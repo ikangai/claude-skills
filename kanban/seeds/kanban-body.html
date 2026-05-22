@@ -49,6 +49,10 @@
 .kb-help{margin:32px 0 0;padding:16px 18px;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:11px;color:var(--gray-600);line-height:1.7;}
 .kb-help b{font-weight:600;color:var(--gray-900);}
 .kb-help code{background:var(--white);border:1px solid var(--gray-200);padding:1px 6px;border-radius:4px;color:var(--gray-800);font-size:10.5px;}
+.kb-toggle{font-family:var(--font-mono);font-size:10.5px;background:var(--white);border:1px solid var(--gray-200);color:var(--gray-700);padding:1px 8px;border-radius:4px;cursor:pointer;transition:background .15s,border-color .15s,color .15s;}
+.kb-toggle:hover{background:var(--gray-50);border-color:var(--gray-400);color:var(--gray-900);}
+.kb-toggle[aria-pressed="true"]{background:var(--gray-900);color:var(--white);border-color:var(--gray-900);}
+.kb-toggle[aria-pressed="true"]:hover{background:var(--gray-800);border-color:var(--gray-800);}
 </style>
 
 <article>
@@ -209,9 +213,16 @@
     }
     writeCards(cards);
     render();
-    // Ask the runtime to mark dirty so the user sees a ⌘S nudge.
-    if (window.runtime && typeof window.runtime.modify === 'function') {
-      // no-op: leave commit to user. Just touch status if exposed.
+    // Opt-in: auto-commit on drop. Default is off — drags are drafts until
+    // ⌘S, mirroring the rest of rwa. When the user has toggled auto-commit on
+    // (via the footer button), every drop triggers runtime.commit() to write
+    // the file immediately. Only meaningful on browsers with the File System
+    // Access API; on Firefox/Safari, commit falls back to a download prompt
+    // so we hide the toggle there (see autoCommitSupported).
+    if (autoCommitEnabled() && window.runtime && typeof window.runtime.commit === 'function') {
+      Promise.resolve(window.runtime.commit()).catch(err => {
+        console.warn('kanban: auto-commit failed', err);
+      });
     }
   }
 
@@ -408,9 +419,55 @@
     return String(s).replace(/[^a-zA-Z0-9_-]/g, c => '\\' + c.charCodeAt(0).toString(16) + ' ');
   }
 
+  // ─── auto-commit-on-drop (opt-in) ────────────────────────────────────
+  // Default is off. Preference is per-board (each file:// URL is its own
+  // origin in Chromium, so localStorage is naturally scoped per board).
+  // Only meaningful with File System Access — on Firefox/Safari, runtime
+  // commit falls back to a Save-As dialog that would prompt on every drop,
+  // so we hide the toggle and ignore the preference there.
+  const AUTO_COMMIT_KEY = 'kb-auto-commit';
+
+  function autoCommitSupported () {
+    try {
+      const st = window.runtime && window.runtime.status;
+      return Boolean(st && st.fsa);
+    } catch (e) { return false; }
+  }
+
+  function autoCommitEnabled () {
+    if (!autoCommitSupported()) return false;
+    try { return localStorage.getItem(AUTO_COMMIT_KEY) === '1'; }
+    catch (e) { return false; }
+  }
+
+  function setAutoCommit (on) {
+    try { localStorage.setItem(AUTO_COMMIT_KEY, on ? '1' : '0'); }
+    catch (e) {}
+    refreshAutoCommitToggle();
+  }
+
+  function refreshAutoCommitToggle () {
+    const btn = root.querySelector('#kb-auto-commit-toggle');
+    if (!btn) return;
+    if (!autoCommitSupported()) { btn.hidden = true; return; }
+    const on = autoCommitEnabled();
+    btn.hidden = false;
+    btn.textContent = on ? 'auto-commit: on' : 'auto-commit: off';
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+
+  function bindAutoCommitToggle () {
+    const btn = root.querySelector('#kb-auto-commit-toggle');
+    if (!btn || btn.dataset.bound === '1') return;
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => setAutoCommit(!autoCommitEnabled()));
+  }
+
   // Kick off sync. Initial render first so the user sees something
   // immediately; then poll.
   render();
+  refreshAutoCommitToggle();
+  bindAutoCommitToggle();
   syncFromDisk();
   setInterval(syncFromDisk, SYNC_POLL_MS);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) syncFromDisk(); });
@@ -419,7 +476,7 @@
 <!-- rwa:frozen:end kanban-runtime -->
 
 <aside class="kb-help">
-  <b>Drag</b> cards between columns to change status · <b>⌘S</b> commits to file · cards created via <code>kanban add</code> from your terminal
+  <b>Drag</b> cards between columns to change status · <b>⌘S</b> commits to file · <button id="kb-auto-commit-toggle" type="button" class="kb-toggle" aria-pressed="false" hidden>auto-commit: off</button> · cards created via <code>kanban add</code> from your terminal
 </aside>
 
 </article>
