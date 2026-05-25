@@ -5,7 +5,7 @@ The diary's capture side uses Claude Code hooks to append events to `.dev-diary/
 ## Prerequisites
 
 - `jq` on PATH. macOS: `brew install jq`. Debian/Ubuntu: `sudo apt-get install jq`.
-- The skill installed at `.claude/skills/diary/` in the project. The capture script is at `.claude/skills/diary/scripts/log-event.sh` and must be executable (`chmod +x`).
+- The skill installed at `.claude/skills/diary/` in the project. The capture script (`scripts/log-event.sh`) and the auto-synthesis script (`scripts/maybe-synthesize.sh`) must both be executable (`chmod +x`).
 
 ## settings.json snippet
 
@@ -65,6 +65,11 @@ Add the following to the project's `.claude/settings.json` under the top-level `
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR/.claude/skills/diary/scripts/log-event.sh\" stop",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/skills/diary/scripts/maybe-synthesize.sh\"",
+            "timeout": 5
           }
         ]
       }
@@ -79,9 +84,31 @@ Add the following to the project's `.claude/settings.json` under the top-level `
 - **`PostToolUse` / `Bash`** — captures shell commands and their exit codes. Truncates long commands to 500 chars. The exit code is the most useful field; failures are the moments worth narrating later.
 - **`UserPromptSubmit`** — captures user prompts (truncated to 500 chars). User feedback and course-corrections are part of the narrative.
 - **`SubagentStop`** — captures the final message from any sub-agent task. Useful when delegating work and the sub-agent returns something the synthesis should know about.
-- **`Stop`** — captures Claude's final message at the end of each turn. Light record of how the session's beats were paced. Optional; can be removed if too noisy.
+- **`Stop`** — runs two commands per turn end:
+  - `log-event.sh stop` captures Claude's final message at the end of each turn (light record of the session's beats).
+  - `maybe-synthesize.sh` checks whether the session has accumulated substantive work and no entry has been written yet; if so, it blocks Stop and injects a directive asking Claude to apply the synthesis workflow before the session ends.
 
-There is deliberately no `SessionEnd` hook auto-triggering synthesis. Inline synthesis happens when the user types `/diary` — that's when full session context is still available. Auto-triggering at SessionEnd would either run in a stripped-context subprocess (poor prose) or fire after the main session is gone.
+## Auto-synthesis via the Stop hook
+
+`maybe-synthesize.sh` is what makes diary entries write themselves. It is a *nudge*, not a synthesizer — the script never writes prose. It only decides whether the in-session Claude should be asked to apply the synthesis workflow before stopping. The actual writing happens inside the still-live session, so the full conversation context is available to the model. That preserves the original "prose needs live context" constraint while removing the requirement that the user type `/diary` explicitly.
+
+The script fires when **all** of the following hold:
+
+1. `.dev-diary/.events.jsonl` exists.
+2. The Stop envelope's `session_id` is present.
+3. The current session has at least `EDIT_THRESHOLD` `edit` events in the log (the substantive-work threshold; default **2**, overridable via the `DIARY_EDIT_THRESHOLD` env var — non-numeric values silently fall back to 2).
+4. No `*.md` file in `.dev-diary/` has an mtime newer than the session's first event timestamp (i.e., no entry has been written for this session yet).
+5. The envelope's `stop_hook_active` field is not `true` (loop prevention — see below).
+6. `.dev-diary/.no-auto-synth` does not exist (per-project opt-out marker).
+7. A working `stat` binary (BSD or GNU) is available — if neither variant works, the script bails silently rather than risk a false-positive nudge.
+
+When all six hold, the script emits JSON of the form `{"decision":"block","reason":"..."}` to stdout. Claude Code interprets that as a directive to keep the session alive and feed the reason back as a follow-up instruction. Claude then reads the events log, applies the bar from `SKILL.md` ("would a future agent benefit from knowing this beyond what the code itself records?"), and either writes the entry or briefly states that the session did not clear the bar.
+
+**Loop prevention.** Once the Stop hook injects, Claude responds, and the next Stop event fires with `stop_hook_active: true`. The script sees that flag and exits silently, so the session actually stops. If Claude wrote an entry, the fresh `*.md` file is newer than the session start anyway, so future Stop checks would also be silent.
+
+**Opting out per project.** Create `.dev-diary/.no-auto-synth` (any content, the existence of the file is the signal). Capture continues normally; the auto-synthesis nudge is suppressed. Useful for projects where you want the events log as audit trail but not the inline prose-writing turns.
+
+**Tuning the threshold.** The default of 2 edits matches the canonical pivot-shaped session in `references/events-schema.md`. To override it without editing the script, set the `DIARY_EDIT_THRESHOLD` environment variable — either globally in your shell profile or per-hook via the `env` field in `settings.json`. Higher = fewer false-positive nudges, more likely to miss short sessions worth recording. Lower = more nudges, more turns spent on Claude deciding "this didn't clear the bar." `EDIT_THRESHOLD=2` at the top of the script stays as the in-code default.
 
 ## Read-only operations are intentionally not captured
 

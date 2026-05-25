@@ -1,6 +1,6 @@
 ---
 name: diary
-description: Maintains a per-project development diary capturing the narrative of how code got built — what was tried, what broke, where direction changed, what was learned. Use this skill when the user invokes /diary to synthesize a session into an entry, when a notable pivot or learning moment occurs mid-session that should be captured before context fades, or when starting work in an area where prior diary entries in .dev-diary/ might provide useful context. Entries are first-person markdown in .dev-diary/ at project root; raw session events accumulate in .dev-diary/.events.jsonl via Claude Code hooks.
+description: Maintains a per-project development diary capturing the narrative of how code got built — what was tried, what broke, where direction changed, what was learned. Use this skill when the user invokes /diary to synthesize a session into an entry, when a Stop-hook directive arrives at end-of-turn asking for auto-synthesis, when a notable pivot or learning moment occurs mid-session that should be captured before context fades, or when starting work in an area where prior diary entries in .dev-diary/ might provide useful context. Entries are first-person markdown in .dev-diary/ at project root; raw session events accumulate in .dev-diary/.events.jsonl via Claude Code hooks, and a Stop hook nudges synthesis automatically when the session has accumulated substantive work.
 ---
 
 # Diary
@@ -15,13 +15,14 @@ The diary is per-project and lives in `.dev-diary/` at the project root, gitigno
 
 ## When to invoke
 
-Invoke this skill in three situations:
+Invoke this skill in four situations:
 
 1. **The user types `/diary`.** Synthesize a diary entry from the current session.
-2. **A significant pivot or learning moment occurs mid-session.** When direction changes notably or a surprising lesson emerges that would be lost by session end, capture it as a short entry without waiting for the user to ask. Examples: realizing the initial approach is wrong and rewriting, discovering a library behaves differently than expected, the user correcting course after several wrong attempts.
-3. **Starting work on an unfamiliar area.** Check `.dev-diary/` for entries relevant to the area before beginning. Read what's there. Surface relevant findings briefly to the user before proceeding.
+2. **The Stop hook injects an auto-synthesis directive.** At end-of-turn, `scripts/maybe-synthesize.sh` checks whether the session has accumulated substantive work (file edits at or above the threshold — default 2, configurable via the `DIARY_EDIT_THRESHOLD` env var — with no entry written yet and no opt-out marker present). When all conditions hold, the hook blocks Stop and feeds back a directive asking you to apply the synthesis workflow before the session ends. Treat that directive exactly like a manual `/diary` invocation — read the events, apply the bar, and either write the entry or briefly say it does not clear the bar. Do not ask the user; just decide and act.
+3. **A significant pivot or learning moment occurs mid-session.** When direction changes notably or a surprising lesson emerges that would be lost by session end, capture it as a short entry without waiting for the user to ask. Examples: realizing the initial approach is wrong and rewriting, discovering a library behaves differently than expected, the user correcting course after several wrong attempts.
+4. **Starting work on an unfamiliar area.** Check `.dev-diary/` for entries relevant to the area before beginning. Read what's there. Surface relevant findings briefly to the user before proceeding.
 
-Do **not** invoke for routine, uneventful work. Successful test runs, mechanical edits matching established patterns, and execution of well-trodden paths do not warrant entries. The bar is: *would a future agent benefit from knowing this, beyond what the code itself records?* If no, skip.
+Do **not** invoke for routine, uneventful work. Successful test runs, mechanical edits matching established patterns, and execution of well-trodden paths do not warrant entries. The bar is: *would a future agent benefit from knowing this, beyond what the code itself records?* If no, skip — including when the Stop hook nudges you. The hook's only signal is "edits happened"; you are the one who applies the bar. A one-sentence "this session didn't clear the bar — no entry written" reply is the correct response when the work was routine.
 
 ## Voice and structure of entries
 
@@ -85,10 +86,13 @@ Do not read every entry every session. The diary accumulates over months — ful
 
 The `.dev-diary/` directory belongs in `.gitignore` by default. The user can opt into committing it later.
 
-## Capture side: hooks
+## Capture and auto-trigger sides: hooks
 
-The capture side runs as Claude Code hooks defined in `.claude/settings.json`. They append normalized events to `.events.jsonl` as the session proceeds. The capture script is `scripts/log-event.sh` (inside this skill directory) and handles all event kinds.
+Two halves of the skill run as Claude Code hooks defined in `.claude/settings.json`:
 
-For the hook configuration and install steps, see `references/hooks-setup.md`.
+- **Capture.** `scripts/log-event.sh` runs on `PostToolUse` (Write/Edit/MultiEdit and Bash), `UserPromptSubmit`, `SubagentStop`, and `Stop`. It appends normalized events to `.dev-diary/.events.jsonl` as the session proceeds. Read-only operations (Read/Grep/Glob/LS) are deliberately excluded as noise.
+- **Auto-trigger.** `scripts/maybe-synthesize.sh` runs as a second command on the `Stop` hook. It never writes prose — it only inspects the events log for the current session, and if the conditions are met (edits at or above the configured threshold, no entry yet, no opt-out, not already in a Stop-hook loop), it emits a JSON directive that blocks Stop and asks the in-session Claude to apply the synthesis workflow. The actual entry is written by Claude with full live conversation context.
 
-The capture side is independent of synthesis. Even if `/diary` is never invoked, the events log accumulates and stays available for later reconstruction.
+For the hook configuration, install steps, conditions, threshold tuning, and the per-project `.dev-diary/.no-auto-synth` opt-out marker, see `references/hooks-setup.md`.
+
+The capture side is independent of synthesis. Even if both `/diary` is never invoked AND auto-synthesis is opted out, the events log accumulates and stays available for later reconstruction.
