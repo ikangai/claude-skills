@@ -197,6 +197,77 @@
       e.currentTarget.classList.remove('is-dragover');
     }
   }
+  // The rwa runtime keeps the canonical doc string in IndexedDB and hydrates
+  // the DOM from it on every page load — INLINE_DOC is only read the very
+  // first time the file is opened. So any DOM-side mutation (drag, polling
+  // merge) that doesn't reach IDB is lost on refresh; ⌘S also reads from IDB
+  // via getDoc(), so a missing IDB write means even committing would save the
+  // stale pre-mutation doc. Splice the new cards JSON into the IDB doc to
+  // keep the model in sync with the view. Callers handle the dirty flag —
+  // it's set on user-initiated edits (drag) but not on file-driven syncs.
+  let persistChain = Promise.resolve();
+  function persistDocToIdb () {
+    persistChain = persistChain.then(persistDocToIdbInner).catch(err => {
+      console.warn('kanban: failed to persist cards to IDB', err);
+    });
+    return persistChain;
+  }
+  async function persistDocToIdbInner () {
+    if (!window.runtime || !window.runtime.id) return;
+    const DB_NAME = 'rwa_' + window.runtime.id;
+    const STORE = 'rwa_doc';
+    const KEY = 'self';
+
+    const db = await new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    try {
+      const current = await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readonly');
+        const req = tx.objectStore(STORE).get(KEY);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      if (typeof current !== 'string') return;
+
+      // The IDB doc holds the runtime form of INLINE_DOC, where the template
+      // literal's escapes have already been resolved — so the kanban-cards
+      // closing tag appears as a literal script end-tag. Splice between the
+      // opener and the next close. The backslash in CLOSE is intentional and
+      // is consumed by the JS string literal at runtime — see the seed-level
+      // comment in extractDiskCards for the same trick.
+      const OPEN = '<script type="application/json" id="kanban-cards">';
+      const CLOSE = '<\/script>';
+      const oi = current.indexOf(OPEN);
+      if (oi < 0) return;
+      const bs = oi + OPEN.length;
+      const ce = current.indexOf(CLOSE, bs);
+      if (ce < 0) return;
+
+      const el = root.getElementById('kanban-cards');
+      const body = el ? (el.textContent || '\n[]\n') : '\n[]\n';
+      const next = current.slice(0, bs) + body + current.slice(ce);
+      if (next === current) return;
+
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+        tx.objectStore(STORE).put(next, KEY);
+      });
+    } finally {
+      try { db.close(); } catch (_) {}
+    }
+  }
+
+  function markDirty () {
+    const commitBtn = document.getElementById('rwa-st-commit');
+    if (commitBtn) commitBtn.classList.add('dirty');
+  }
+
   function onDrop (e) {
     e.preventDefault();
     const col = e.currentTarget;
@@ -213,6 +284,8 @@
     }
     writeCards(cards);
     render();
+    persistDocToIdb();
+    markDirty();
     // Opt-in: auto-commit on drop. Default is off — drags are drafts until
     // ⌘S, mirroring the rest of rwa. When the user has toggled auto-commit on
     // (via the footer button), every drop triggers runtime.commit() to write
@@ -397,6 +470,12 @@
 
       writeCards(merged);
       render();
+      // Push the merge result back into IDB so commit() and a future reload
+      // see what the user sees. Without this, a CLI add visible in the tab
+      // would be wiped by the next ⌘S (which reads the stale IDB doc).
+      // Don't flag dirty — the polling sync is bringing file state IN, not
+      // introducing new browser-only changes.
+      persistDocToIdb();
       lastSeenDisk = diskCards;
 
       // Subtle: flash newly-added cards so the user sees them appear.
