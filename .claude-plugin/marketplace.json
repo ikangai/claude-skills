@@ -1,0 +1,11 @@
+{
+  "name": "claude-skills",
+  "owner": { "name": "ikangai" },
+  "plugins": [
+    {
+      "name": "groupchat",
+      "source": "./groupchat",
+      "description": "Shared chat bus for parallel Claude Code instances on one repo — coordinate via hooks, @mentions, a team barrier, and token tracking."
+    }
+  ]
+}
