@@ -22,6 +22,20 @@ To install a skill in Claude Code, add it to your `.claude/settings.json`:
 }
 ```
 
+## Plugins
+
+This repo is also a Claude Code **plugin marketplace**. Plugins bundle hooks,
+commands, and skills together and install via `/plugin`.
+
+| Plugin | Description |
+|---|---|
+| [groupchat](./groupchat/) | Shared chat bus for parallel Claude Code instances working one repo — coordinate via hooks, @mentions, a team barrier, and token tracking. |
+
+```
+/plugin marketplace add ikangai/claude-skills
+/plugin install groupchat
+```
+
 ## License
 
 MIT
