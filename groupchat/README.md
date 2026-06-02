@@ -1,5 +1,8 @@
 # groupchat (plugin)
 
+> See the [CHANGELOG](./CHANGELOG.md) for release history.
+
+
 A group chat for **parallel Claude Code instances working one repo.** Multiple
 Claude sessions (e.g. one per git worktree, or several people on the same project)
 share a single on-disk message bus and coordinate through it: announce what
