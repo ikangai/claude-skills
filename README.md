@@ -29,7 +29,7 @@ commands, and skills together and install via `/plugin`.
 
 | Plugin | Description |
 |---|---|
-| [groupchat](./groupchat/) | Shared chat bus for parallel Claude Code instances working one repo — coordinate via hooks, @mentions, a team barrier, and token tracking. |
+| [groupchat](./groupchat/) | Shared chat bus for parallel Claude Code instances working one repo — coordinate via hooks, @mentions, a team barrier, and token tracking. [Changelog](./groupchat/CHANGELOG.md). |
 
 ```
 /plugin marketplace add ikangai/claude-skills
