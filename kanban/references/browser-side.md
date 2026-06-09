@@ -23,21 +23,28 @@ At this point the file on disk has *not* changed yet. The runtime is "dirty" and
 
 The drag-then-commit pattern is intentional. It mirrors the way a person works through a board — make several moves, then commit them together. Each drag is undoable until commit.
 
-## CLI and browser stay in sync automatically
+## Keeping the CLI and browser in sync
 
-The kanban runtime polls the file on disk every ~2.5 seconds while the tab is visible. When it sees the cards JSON has changed (because Claude ran `kanban add`, `kanban claim`, `kanban move`, `kanban note`, or `kanban delete` from the terminal), it does a three-way merge against (a) the disk state at the previous poll and (b) the cards currently in the browser. The merge result is written back to the DOM and rendered.
+Mental model: **reload (or the `↻ sync from file` button) pulls the latest from the file; ⌘S pushes the browser's state to the file.** That keeps the two surfaces consistent no matter which one moved last.
 
-What this means in practice:
+### On every page load (the reliable path)
 
-- **CLI adds appear automatically.** Within a few seconds of `kanban add`, a new card shows up in the To Do column with a brief highlight pulse.
-- **CLI claims / moves / notes appear automatically.** Status changes propagate, assignee chips update, note counts increment — all without reloading the tab.
-- **Local drags survive.** If the human drags a card to a new column but hasn't pressed ⌘S yet, and Claude makes a CLI change to a *different* card, the local drag is preserved. The CLI's change merges in alongside it.
-- **Same-card conflicts go to the local drag.** If the human drags card-X locally AND Claude runs `kanban move card-X` from the CLI before the local drag is committed, the local drag wins on the status field. (Logic: the human just acted; reverting their drag would be confusing. The next ⌘S writes the local status to disk, settling the conflict.)
-- **Deletes from the CLI propagate.** If `kanban delete` removes a card, the open tab drops it on the next poll.
+Before the board paints, the runtime reconciles the file *into* the browser. It reads the cards straight out of the freshly-loaded document (the `INLINE_DOC` snapshot, which the browser just parsed from the file on disk) and adopts them over whatever stale state IndexedDB held:
 
-The poll uses `fetch(location.href)` on the document's own `file://` origin, which Chromium permits since each `file://` URL is its own origin. The poll pauses when the tab is hidden (`document.hidden`) and runs once immediately on tab focus, so switching back to a board from another tab gives an instant refresh.
+- **CLI writes show up on reload.** After Claude runs `kanban add / claim / move / note / delete`, reload the tab — or click **`↻ sync from file`** in the footer — and the board reflects the file. Adds appear, status changes propagate, deletes drop.
+- **Uncommitted local drags survive the reload.** If the human dragged a card but hasn't pressed ⌘S, that drag is preserved across the reload while the file's other changes merge in around it. The board tracks exactly which cards were dragged, so a CLI move of *another* card still comes through.
+- **Same-card conflicts go to the local drag.** If the human dragged card-X locally and Claude also `kanban move card-X` from the CLI, the local drag wins on the status field until the next ⌘S settles it to disk.
 
-If you ever want to disable the sync (debugging, slow disk, network filesystem), open the browser console and run `clearInterval(<the-interval-id>)` — but you shouldn't normally need to. The sync is invisible when nothing has changed and quiet when something has.
+This path needs no network and works on `file://`. The `↻ sync from file` button is just a reload — the honest, always-available way to pull CLI changes in.
+
+### While the tab stays open (best-effort live sync)
+
+A ~2.5 s poll also tries to pick up CLI changes *without* a reload, but how far it gets depends on how the board was opened:
+
+- **After the first ⌘S, or over http(s):** live updates work. Once the human commits once, the runtime holds a File System Access handle it can re-read; the poll uses that (or `fetch`, when the board is served over http(s)) and merges changes in with a brief highlight pulse — no reload needed.
+- **On a fresh `file://` open (before any commit):** there is no live source. **Chrome blocks `fetch()` of `file://` URLs** (each `file://` page has an opaque `null` origin, and cross-origin `file://` fetches are denied), and no FSA handle exists yet. The poll quietly no-ops; reload / `↻` is the way to pull changes until the first commit.
+
+The poll pauses when the tab is hidden (`document.hidden`) and runs once on tab focus.
 
 ## Where the data lives
 
@@ -46,9 +53,11 @@ Two storage layers under the hood:
 1. **The file** is durable state. It contains the `INLINE_DOC` template literal with the latest committed cards JSON.
 2. **IndexedDB** is working state, namespaced by the document's UUID. Every drag and commit updates IDB; commits also write the file.
 
-On first open, the rwa runtime hydrates IDB from `INLINE_DOC`. On subsequent opens, IDB already has state and `INLINE_DOC` is ignored — *that* was the failure mode that motivated the polling sync above. The poll bypasses IDB hydration entirely by reading the file fresh and merging into the current DOM.
+On the container's *first* open, the rwa runtime hydrates IDB from `INLINE_DOC` and renders that. On *every subsequent* open it renders from IDB and ignores `INLINE_DOC` — which is what makes a board the browser has opened before go stale the moment the CLI rewrites the file. (The `INLINE_DOC` literal itself is always current: the browser just parsed it from the file on disk. It's the *IDB-wins* hydration rule that drops it on the floor.)
 
-When the user presses ⌘S, the rwa runtime writes the current document state (DOM-derived) back into the file's `INLINE_DOC` literal. On the next poll, the disk version equals the browser version and nothing happens. The sync loop is self-quiescing.
+The kanban body closes that gap at load time — see [Keeping the CLI and browser in sync](#keeping-the-cli-and-browser-in-sync). Because the freshly-parsed `INLINE_DOC` is in scope, the board reads the file's cards from it directly (no `fetch`, which `file://` forbids anyway) and reconciles them over the stale IDB doc *before the first paint*, then writes the result back into IDB so a later ⌘S and the next load agree with what the user sees.
+
+When the user presses ⌘S, the rwa runtime writes the current document state (DOM-derived) back into the file's `INLINE_DOC` literal, so the file and IDB match again. The reconcile-on-load and ⌘S-on-save form the two halves of the loop: load pulls the file in, ⌘S pushes the browser out.
 
 ## Why the data isn't just a `<div>`-tree
 

@@ -268,6 +268,38 @@
     if (commitBtn) commitBtn.classList.add('dirty');
   }
 
+  // ─── uncommitted-drag tracking ───────────────────────────────────────
+  // A local drag updates the DOM + IDB but not the file (until ⌘S). We record
+  // the ids of cards with an uncommitted local drag so a reload can pull in CLI
+  // changes while preserving exactly those in-flight drags — see bootReconcile.
+  // Tracking ids (not just a boolean) means a CLI move of some OTHER card still
+  // comes through on reload; only the cards the human actually dragged hold
+  // their local status. Cleared on commit (the drag has reached the file).
+  //
+  // This lives in sessionStorage, NOT localStorage: the set is only meaningful
+  // across a reload within the SAME tab, and sessionStorage is exactly that —
+  // per-tab and reload-surviving. localStorage is shared across every tab on
+  // the board's origin, so two tabs each mid-drag would pollute each other's
+  // merge (tab A would "preserve" a card tab B dragged and reject the file's
+  // version of it). sessionStorage isolates them. We suffix the doc id so two
+  // boards opened in one tab over time don't collide.
+  function draggedKey () {
+    return 'kb-dragged-' + ((window.runtime && window.runtime.id) || 'doc');
+  }
+  function getDraggedIds () {
+    try { return new Set(JSON.parse(sessionStorage.getItem(draggedKey()) || '[]')); }
+    catch (e) { return new Set(); }
+  }
+  function addDraggedId (id) {
+    try {
+      const s = getDraggedIds(); s.add(id);
+      sessionStorage.setItem(draggedKey(), JSON.stringify([...s]));
+    } catch (e) {}
+  }
+  function clearDraggedIds () {
+    try { sessionStorage.removeItem(draggedKey()); } catch (e) {}
+  }
+
   function onDrop (e) {
     e.preventDefault();
     const col = e.currentTarget;
@@ -286,6 +318,7 @@
     render();
     persistDocToIdb();
     markDirty();
+    addDraggedId(id);
     // Opt-in: auto-commit on drop. Default is off — drags are drafts until
     // ⌘S, mirroring the rest of rwa. When the user has toggled auto-commit on
     // (via the footer button), every drop triggers runtime.commit() to write
@@ -299,17 +332,25 @@
     }
   }
 
-  // ─── live sync with the file on disk ─────────────────────────────────
+  // ─── file → browser sync ─────────────────────────────────────────────
   // The rwa runtime hydrates the DOM from IndexedDB on every page load,
-  // ignoring INLINE_DOC after first hydration. That means CLI writes to
-  // board.html are invisible to an open browser tab until IDB is cleared.
+  // ignoring INLINE_DOC after the container's first-ever open. That means CLI
+  // writes to board.html are invisible to an open browser tab until IDB is
+  // re-synced. Two mechanisms close that loop:
   //
-  // We close that loop here: poll the file on disk every ~2.5s, parse
-  // out the kanban-cards JSON inside the INLINE_DOC literal, and
-  // three-way-merge against (a) what we saw last poll and (b) what's in
-  // the current DOM. CLI-side adds, deletes, claims, moves, and notes
-  // appear in the open tab without manual intervention. Browser-side
-  // drag changes (status, claimed_at) are preserved across syncs.
+  //   1. bootReconcile() — runs once per page load, BEFORE the first paint.
+  //      It reads the file's cards straight from the in-scope INLINE_DOC const
+  //      (captured from the file at load time) and adopts them over stale IDB.
+  //      This is what makes a reload / the ↻ button reflect the latest CLI
+  //      writes. It needs no network and works on file://.
+  //
+  //   2. syncFromDisk() — a ~2.5s poll for live changes while the tab stays
+  //      open. It reads the file via the File System Access handle (available
+  //      after the first ⌘S) or fetch() (http(s) only), then three-way-merges
+  //      against (a) what we saw last poll and (b) the current DOM. NOTE:
+  //      Chrome blocks fetch() of file:// URLs, so on a fresh file:// open
+  //      (before any commit) the poll has no source and is a no-op — the user
+  //      reloads / clicks ↻ instead. Browser-side drag changes are preserved.
 
   const SYNC_POLL_MS = 2500;
   let lastSeenDisk = null;            // cards array, last successfully fetched
@@ -341,15 +382,27 @@
     lit = lit.replace(/\\`/g, '`');
     lit = lit.replace(/\\\\/g, '\\');
 
-    // Now `lit` is the runtime-eval'd INLINE_DOC string. Find the
-    // kanban-cards script content inside it.
+    // `lit` is now the runtime-eval'd INLINE_DOC string; pull the cards out.
+    return cardsFromDocString(lit);
+  }
+
+  // Extract the kanban-cards JSON array from an already-eval'd document string
+  // (the runtime form, where the cards' end-tag is a literal one). Shared by
+  // extractDiskCards (raw file text, after escape reversal) and bootReconcile
+  // (the in-scope INLINE_DOC const, already a runtime string). The backslash in
+  // '<\/script>' below is consumed by the JS string literal at runtime, so this
+  // searches for a real script end-tag. (This comment writes it escaped too:
+  // a bare end-tag here would prematurely close the script when the runtime
+  // re-parses INLINE_DOC via innerHTML — the tokenizer scans comments as well.)
+  function cardsFromDocString (docStr) {
+    if (typeof docStr !== 'string') return null;
     const open = '<script type="application/json" id="kanban-cards">';
-    const ki = lit.indexOf(open);
+    const ki = docStr.indexOf(open);
     if (ki < 0) return null;
     const ks = ki + open.length;
-    const ke = lit.indexOf('<\/script>', ks);
+    const ke = docStr.indexOf('<\/script>', ks);
     if (ke < 0) return null;
-    const body = lit.slice(ks, ke).trim();
+    const body = docStr.slice(ks, ke).trim();
     if (!body) return [];
     try { return JSON.parse(body); }
     catch (e) { return null; }
@@ -441,18 +494,123 @@
     return { merged: ordered, addedIds };
   }
 
+  // ─── boot reconciliation: file → browser on every page load ──────────
+  // The runtime renders from IDB and only falls back to INLINE_DOC on a
+  // container's first-ever open; afterwards IDB wins and the freshly loaded
+  // INLINE_DOC is ignored — so a board the browser has opened before goes
+  // stale the moment the CLI writes the file. But INLINE_DOC is captured from
+  // the file at load time, so it always holds what `kanban add/move/...` wrote.
+  // We read it directly (fetch(location.href) is blocked on file:// in Chrome)
+  // and reconcile before the first paint, so a reload adopts the file.
+  function bootReconcile () {
+    let fileCards = null;
+    try {
+      fileCards = (typeof INLINE_DOC === 'string') ? cardsFromDocString(INLINE_DOC) : null;
+    } catch (e) { fileCards = null; }
+    if (!fileCards) {
+      // Couldn't read cards out of INLINE_DOC (missing/malformed JSON, or the
+      // splicer never injected it). Keep whatever IDB has rather than wiping
+      // the board — but say so, or it looks like a silent stale-board bug with
+      // no clue why. Mirrors readCards()'s malformed-JSON warning.
+      console.warn('kanban: could not parse cards from INLINE_DOC; keeping current board state');
+      return;
+    }
+    const browserCards = readCards();
+    lastSeenDisk = fileCards;                 // seed the live-sync baseline
+    if (eqShallow(fileCards, browserCards)) return;   // already in sync
+
+    const dragged = getDraggedIds();
+    let merged;
+    if (dragged.size === 0) {
+      // Clean browser: the file is the source of truth. Adopt it wholesale.
+      merged = fileCards;
+    } else {
+      // The browser holds uncommitted local drags. The file owns the card set
+      // (the browser never creates cards) and every field — EXCEPT the status
+      // and claimed_at of the specific cards the user dragged, where the local
+      // drag wins (the documented same-card conflict policy). So CLI adds,
+      // deletes, notes, and moves of OTHER cards all come through, while the
+      // human's in-flight drags survive the reload.
+      const brById = new Map(browserCards.map(c => [c.id, c]));
+      merged = fileCards.map(fc => {
+        const bc = brById.get(fc.id);
+        if (!bc || !dragged.has(fc.id)) return fc;
+        return Object.assign({}, fc, { status: bc.status, claimed_at: bc.claimed_at });
+      });
+    }
+    if (eqShallow(merged, browserCards)) return;
+    writeCards(merged);
+    persistDocToIdb();   // so ⌘S and the next load see what the user now sees
+  }
+
+  // Read one value from an IndexedDB store by key, opening the db read-only and
+  // tolerating a missing store/db (returns null). Used to fetch the runtime's
+  // stored File System Access handle without depending on runtime internals.
+  function idbGetRaw (dbName, store, key) {
+    return new Promise((resolve) => {
+      let req;
+      try { req = indexedDB.open(dbName); }
+      catch (e) { return resolve(null); }
+      req.onerror = () => resolve(null);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(store)) { try { db.close(); } catch (_) {} return resolve(null); }
+        let out = null;
+        try {
+          const tx = db.transaction(store, 'readonly');
+          const r = tx.objectStore(store).get(key);
+          r.onsuccess = () => { out = r.result; };
+          tx.oncomplete = () => { try { db.close(); } catch (_) {} resolve(out); };
+          tx.onerror = () => { try { db.close(); } catch (_) {} resolve(null); };
+        } catch (e) { try { db.close(); } catch (_) {} resolve(null); }
+      };
+    });
+  }
+
+  // Read the file's current bytes WITHOUT fetch(): Chrome rejects fetch() of
+  // file:// URLs. Prefer the File System Access handle the runtime stores after
+  // the first ⌘S (readable without a prompt only while permission is already
+  // granted — i.e. the same session as the commit); fall back to fetch() for
+  // boards served over http(s). Returns null when no source is available.
+  async function readFreshFileText () {
+    try {
+      const id = window.runtime && window.runtime.id;
+      if (id) {
+        const handle = await idbGetRaw('rwa_' + id, 'rwa_fsa', 'self');
+        if (handle && typeof handle.queryPermission === 'function') {
+          const perm = await handle.queryPermission({ mode: 'read' });
+          if (perm === 'granted') {
+            const file = await handle.getFile();
+            return await file.text();
+          }
+        }
+      }
+    } catch (e) { /* fall through to fetch */ }
+    // fetch() is rejected for file:// in Chrome — and the browser logs a CORS
+    // error to the console on every attempt, regardless of try/catch — so only
+    // try it for http(s) boards. On file:// with no usable FSA handle we have
+    // no live source; the ↻ button / reload (which re-reads INLINE_DOC via
+    // bootReconcile) is the path instead.
+    if (location.protocol === 'file:') return null;
+    const res = await fetch(window.location.href, { cache: 'no-store' });
+    if (!res.ok) return null;
+    return await res.text();
+  }
+
   async function syncFromDisk () {
     if (syncInFlight) return;
     if (document.hidden) return;
     syncInFlight = true;
     try {
-      const res = await fetch(window.location.href, { cache: 'no-store' });
-      if (!res.ok) return;
-      const text = await res.text();
+      let text = null;
+      try { text = await readFreshFileText(); }
+      catch (e) { text = null; }   // file:// fetch throws → no live source this tick
+      if (text == null) return;
       const diskCards = extractDiskCards(text);
       if (!diskCards) return;
 
       // First successful poll: just record the baseline, nothing to merge.
+      // (bootReconcile usually seeds lastSeenDisk already; this is a fallback.)
       if (lastSeenDisk === null) { lastSeenDisk = diskCards; return; }
 
       // Disk hasn't changed since last poll. Nothing to do.
@@ -542,11 +700,40 @@
     btn.addEventListener('click', () => setAutoCommit(!autoCommitEnabled()));
   }
 
-  // Kick off sync. Initial render first so the user sees something
-  // immediately; then poll.
+  // ─── manual "sync from file" affordance ──────────────────────────────
+  // The reliable way to pull CLI writes into the tab on file:// is a reload:
+  // it re-parses the file into INLINE_DOC, and bootReconcile() then adopts it.
+  // Safe while dirty — bootReconcile preserves the uncommitted drag.
+  function bindReloadButton () {
+    const btn = root.querySelector('#kb-reload');
+    if (!btn || btn.dataset.bound === '1') return;
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => location.reload());
+  }
+
+  // Clear the uncommitted-drag flag whenever the document is committed (⌘S,
+  // the commit button, or auto-commit): a commit writes IDB → file, so the
+  // browser and file agree and there is no longer an in-flight local drag.
+  function subscribeCommit () {
+    try {
+      if (window.runtime && typeof window.runtime.on === 'function') {
+        window.runtime.on('commit', () => clearDraggedIds());
+      }
+    } catch (e) {}
+  }
+
+  // Boot: reconcile the file INTO the browser before the first paint, so a
+  // reload / the ↻ button always reflects the latest `kanban` CLI writes,
+  // then render and wire up live sync.
+  bootReconcile();
   render();
   refreshAutoCommitToggle();
   bindAutoCommitToggle();
+  bindReloadButton();
+  subscribeCommit();
+  // Best-effort live sync while the tab is open. Works after the first ⌘S (via
+  // the File System Access handle) or over http(s); on a fresh file:// open it
+  // has no source, so the ↻ button / reload are the path until the first commit.
   syncFromDisk();
   setInterval(syncFromDisk, SYNC_POLL_MS);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) syncFromDisk(); });
@@ -555,7 +742,7 @@
 <!-- rwa:frozen:end kanban-runtime -->
 
 <aside class="kb-help">
-  <b>Drag</b> cards between columns to change status · <b>⌘S</b> commits to file · <button id="kb-auto-commit-toggle" type="button" class="kb-toggle" aria-pressed="false" hidden>auto-commit: off</button> · cards created via <code>kanban add</code> from your terminal
+  <b>Drag</b> cards between columns to change status · <b>⌘S</b> commits to file · <button id="kb-reload" type="button" class="kb-toggle" title="Reload the board from the file on disk — picks up cards added or moved via the kanban CLI">↻ sync from file</button> · <button id="kb-auto-commit-toggle" type="button" class="kb-toggle" aria-pressed="false" hidden>auto-commit: off</button> · cards created via <code>kanban add</code> from your terminal
 </aside>
 
 </article>

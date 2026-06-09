@@ -32,8 +32,8 @@ A card is a JSON object inside the `kanban-cards` array. The CLI scripts create,
 | `status` | enum | yes | `todo` | One of `todo`, `in_progress`, `review`, `done`. |
 | `priority` | enum | no | `none` | One of `high`, `medium`, `low`, `none`. Drives the left-border color. |
 | `tags` | string[] | no | `[]` | Free-form labels. Shown as chips on the card. |
-| `assigned_to` | string \| null | no | `null` | Agent identity. Set by `claim.sh`. |
-| `claimed_at` | ISO timestamp \| null | no | `null` | When the current claim was made. |
+| `assigned_to` | string \| null | no | `null` | Agent identity. Set by `claim.sh` (self) or `assign.sh` (other). |
+| `claimed_at` | ISO timestamp \| null | no | `null` | When the current claim or assignment was made. |
 | `notes` | Note[] | no | `[]` | Append-only log; see schema below. |
 | `subtasks` | string[] | no | `[]` | Reserved for v1; v0 leaves this empty. |
 | `created_at` | ISO timestamp | yes | (auto) | UTC, set on creation. |

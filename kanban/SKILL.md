@@ -1,6 +1,6 @@
 ---
 name: kanban
-description: Per-project visual kanban board for Claude Code, backed by a self-contained rwa (rewritable) HTML file at .kanban/board.html. Cards have status (todo/in_progress/review/done), priority, tags, assignee, and notes. Use this skill when the user invokes /kanban, when starting work and the user references "the board" or "the kanban", when needing to know what other agents are working on, or when a piece of work warrants becoming a card. The skill drives a small Bash CLI surface — init/add/claim/move/note/list — so reads and writes are atomic and structured. The board file also opens directly in any modern browser; the human drags cards and presses ⌘S to commit.
+description: Per-project visual kanban board for Claude Code, backed by a self-contained rwa (rewritable) HTML file at .kanban/board.html. Cards have status (todo/in_progress/review/done), priority, tags, assignee, and notes. Use this skill ambiently — whenever a project has a board, silently keep it in sync with the work: add cards for substantive new tasks, claim cards when starting work, move them on completion or pivot, assign to other agents/humans on handoff. Also invoke explicitly when the user says /kanban, references "the board", or asks what's being worked on. The skill drives a Bash CLI — init/add/claim/move/note/assign/list — so reads and writes are atomic and structured. The board file also opens directly in any modern browser; the human drags cards and presses ⌘S to commit.
 ---
 
 # Kanban
@@ -13,18 +13,28 @@ Two surfaces, one file, same source of truth.
 
 ### When to invoke
 
+The skill runs in two modes: **explicit** (user asks) and **ambient** (you operate the board as a side-effect of doing the work). The board is for work that takes more than a few minutes and that the user or another agent might come back to — both modes share that bar.
+
+**Explicit triggers:**
+
 - **The user says `/kanban`** with no further detail → run `kanban list` and report the board state.
 - **The user references "the board", "my kanban", "what's on the board", "what am I working on"** → invoke `kanban list`.
-- **The user gives a task that's substantive enough to track** (a feature, a bug, a refactor, a non-trivial investigation) → propose adding it as a card via `kanban add`. Confirm before adding unless the user said "add it to the board" or similar.
-- **The user starts work in a multi-instance setup** (worktrees, multiple terminals) → `kanban list --status=in_progress` to see what other agents are already doing; consider what to claim.
-- **Mid-session, a task you're working on is real enough to be on the board** → ask the user "should I add this to the board?" before adding.
+- **The user asks who's working on what** → `kanban list --status=in_progress`.
 
-Do not invoke for trivial one-shot questions, code-review feedback, or anything that won't outlive the session. The board is for work that takes more than a few minutes and that the user (or another agent) might come back to.
+**Ambient triggers** (no permission needed when the project already has a `.kanban/board.html`):
+
+- **A substantive new task appears in the conversation** → `add.sh` then `claim.sh` in one step. Acknowledge with one line: "Added & claimed `<id>`." See [Ambient management](#ambient-management) for what counts as substantive.
+- **You start work that's already on the board** → `claim.sh <id>`. If it's already claimed by another agent (exit 2), surface the conflict instead of silently retrying.
+- **You finish the work on a card** → `move.sh <id> review` (or `done` if the user has already accepted it). Don't leave finished work in `in_progress`.
+- **You pivot, hit a wall, or hand off** → `note.sh` for the why, then `move.sh ... todo` or `assign.sh ... <other>` as appropriate.
+- **Starting a session in a multi-instance setup** (worktrees, multiple terminals) → `kanban list --status=in_progress` first to avoid stepping on another agent's work.
+
+**Don't invoke** for trivial one-shot questions, code-review feedback, or anything that won't outlive the session — those aren't board material. Also don't auto-init: if a project has no `.kanban/` directory yet, mention it once when substantive work appears ("There's no board here — want me to `kanban init`?") and wait for the go-ahead.
 
 ### How agents and humans share the board
 
 - **Claude operates the board through the CLI** scripts in this skill's `scripts/` directory. Each script writes the `.kanban/board.html` file atomically.
-- **The human opens `.kanban/board.html` in a browser** to see the visual board, drag cards between columns, and ⌘S to commit. The browser polls the file every ~2.5s for changes; CLI edits flow into open tabs automatically (see `references/browser-side.md`).
+- **The human opens `.kanban/board.html` in a browser** to see the visual board, drag cards between columns, and ⌘S to commit. The board reconciles the file on every load, so a reload — or the `↻ sync from file` button — shows the latest CLI edits (uncommitted local drags are preserved). Live auto-refresh without a reload is best-effort: it works once the human has pressed ⌘S, or when the board is served over http(s), but not on a fresh `file://` open, where Chrome blocks `fetch()` of `file://` URLs (see `references/browser-side.md`).
 - **Multi-instance setup**: each Claude instance has its own assignee identity. Set `KANBAN_AGENT_NAME=alpha` (or `beta`, `review`, etc.) in each worktree's shell to get friendly names; otherwise the skill falls back to a short hash of `$CLAUDE_SESSION_ID`.
 
 ## The CLI surface
@@ -78,6 +88,14 @@ bash $CLAUDE_SKILL_DIR/scripts/note.sh <card-id> "Picked express, not koa — sm
 
 Appends a timestamped, agent-stamped note. Use for material decisions, dead-ends, or anything a future agent picking up the card should know. Don't use for routine commentary.
 
+### `assign.sh` — hand a card to someone else
+
+```bash
+bash $CLAUDE_SKILL_DIR/scripts/assign.sh <card-id> <agent-name> [--move=<status>]
+```
+
+Sets `assigned_to` to an arbitrary name (free-form string, no user directory). Use for explicit handoff to *another* agent or human — distinct from `claim.sh`, which is "I'm taking this." Does not change status by default; pass `--move=review` (or other status) when the handoff also implies a column change, e.g. assigning to a human for review.
+
 ### `list.sh` — show the board
 
 ```bash
@@ -89,15 +107,70 @@ bash $CLAUDE_SKILL_DIR/scripts/list.sh --json             # raw JSON
 
 Default output is a compact text view suitable for terminal reading. `--json` is for programmatic use (filter cards yourself, count things, etc.). All filters compose.
 
-## Voice and conventions
+## Ambient management
 
-When invoking the skill conversationally:
+The board should reflect the work without being asked. When a project has a `.kanban/board.html`, operate it as a passive side-effect of normal conversation — the same way you'd run tests or save files. The user shouldn't have to direct each operation, and you shouldn't pause to ask permission for routine updates.
 
-- **Be terse on success.** "Added card `2026-05-20-refactor-auth`." or "Moved to in_progress." — one line per operation. Don't restate parameters back.
-- **Surface conflicts proactively.** If `claim.sh` exits 2 (already claimed), don't silently retry. Tell the user: "That's already claimed by `beta`. Want me to take over (`--force`), or pick a different card?"
-- **Don't auto-create cards aggressively.** Treat card creation like a small commit — propose first, confirm, then add. The exception is when the user says "add it to the board" or "track this" or similar explicit go-ahead.
-- **When the user pivots or finishes**, log it. Finishing the work the card represents → `move.sh ... done`. Hitting a dead-end and changing approach → `note.sh ... "tried X, didn't work because Y, pivoting"`. Cards without these accumulations decay into stale status.
-- **The board is not a tracker for you** — it's a tracker for the project. Trivial bookkeeping (read this file, run this test) doesn't go on the board.
+The cost of an update is one terse line ("Added `2026-05-20-refactor-auth`."); the cost of a missed update is a stale board the user can't trust. Lean toward updating.
+
+### When to create a card
+
+Auto-add when the user describes work that is all three of:
+
+- **Substantive** — more than a few minutes of effort, more than a one-file change, or requires research.
+- **Named** — has a clear deliverable you could point to ("the auth refactor", not "let me think about auth").
+- **Persistent** — likely to outlive this single response.
+
+Skip when work is one-shot ("what does this function do?"), trivial ("rename this variable"), or part of your own loop (running tests, reading files to plan).
+
+If intent is genuinely ambiguous — "explore options for X", "look into Y a bit" — ask once: "Want this on the board?" Don't add silently for work that may not happen.
+
+When the card is for work you're about to start, `add` then immediately `claim` it in the same step. Don't leave a freshly-created card in `todo` if you're picking it up right now — that's two state changes for one event.
+
+### When to change a card's status
+
+- **`todo` → `in_progress`**: when you start work. Use `claim.sh`, not `move.sh` — claim sets the assignment in the same operation.
+- **`in_progress` → `review`**: when implementation is complete and the user typically validates this kind of work. Most coding tasks land here, not `done`.
+- **`in_progress` → `done`**: when the user has already accepted the result ("looks good", "ship it") or for trivial cards where review would be theatre.
+- **`review` → `done`**: when the user accepts what was in review.
+- **`review` → `in_progress`**: when the user kicks back with changes.
+- **`in_progress` → `todo`**: when you're abandoning the approach but the work itself is still wanted. `move.sh ... todo` clears the assignment so another agent can pick it up. Pair with `note.sh` explaining the pivot.
+
+### When to add a note
+
+Notes are for things a future reader — you in a week, or another agent picking up the card — wouldn't know from the code alone:
+
+- A non-obvious technical decision and why ("picked express, not koa — smaller surface").
+- A dead-end and what was learned ("tried Y, didn't work because Z, pivoting to W").
+- A constraint you discovered ("rate-limited at 100rps, needs throttling").
+- Handoff context for the next agent ("backend done; blocked on schema sign-off from the data team").
+
+Don't note routine progress ("read X", "ran tests"). The card's status already communicates that work is happening.
+
+### When to assign to someone else
+
+`claim.sh` is the "I'm taking this" verb. `assign.sh` is the "X is taking this" verb — explicit handoff to another agent or human. Use `assign.sh` (not `claim --agent=`) when the user says any of:
+
+- "Let alpha take this" / "this is beta's"
+- "Hand this off to <name>" / "<name> should pick this up"
+- "This needs <name>'s eyes" / "for review by <name>" (pair with `--move=review`)
+
+**On who you can assign to:** the skill has no user directory — `assigned_to` is a free-form string. Practical rules:
+
+- Use names that actually appear in the conversation. Don't invent assignees.
+- Match the casing of existing assignees on the board. If `alpha` exists, don't create `Alpha`. Check `kanban list --json` if unsure.
+- For humans without a known handle, ask once: "Who should I assign this to?" Or move the card back to `todo` (clears assignment) if the human will figure it out from the board.
+- The browser renders whatever string you set as a chip — so `martin`, `alpha`, `human:reviewer`, `data-team` all render fine.
+
+### Voice and elegance
+
+- **One line per update.** "Added `<id>`." "Moved to review." "Assigned to alpha." Never restate the title or description — the user already typed them and can see the board.
+- **Batch related updates.** Three cards from one user instruction → one acknowledgement: "Added 3 cards: `a`, `b`, `c`." Same for moves.
+- **Stay silent on coupled operations.** Creating + immediately claiming is one event; one line. Moving + assigning on a single handoff is one event; one line.
+- **Surface conflicts proactively.** If `claim.sh` exits 2, say so once and ask: take over with `--force`, or pick a different card?
+- **Don't backfill the board.** Already-completed work doesn't get retroactive cards unless the user asks.
+- **Respect "don't track this."** Honor explicit opt-outs.
+- **The board is not a tracker for *you*** — it's a tracker for the project. Trivial bookkeeping (read this file, run this test) doesn't go on the board.
 
 ## Card schema
 
