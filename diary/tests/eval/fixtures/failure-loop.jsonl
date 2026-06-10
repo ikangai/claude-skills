@@ -1,0 +1,11 @@
+{"ts":"2026-06-03T10:00:10Z","kind":"prompt","session_id":"sess_fail","cwd":"/proj","prompt":"the export endpoint 500s on large datasets, please fix"}
+{"ts":"2026-06-03T10:01:20Z","kind":"bash","session_id":"sess_fail","cwd":"/proj","command":"curl -sf localhost:8000/api/export?rows=200000 -o /dev/null","exit_code":22,"description":"Reproduce the export failure"}
+{"ts":"2026-06-03T10:04:01Z","kind":"edit","session_id":"sess_fail","cwd":"/proj","tool":"Edit","file_path":"/proj/api/export.py"}
+{"ts":"2026-06-03T10:04:40Z","kind":"bash","session_id":"sess_fail","cwd":"/proj","command":"pytest tests/test_export.py -x","exit_code":1,"description":"Run export tests after streaming rewrite"}
+{"ts":"2026-06-03T10:08:12Z","kind":"edit","session_id":"sess_fail","cwd":"/proj","tool":"Edit","file_path":"/proj/api/export.py"}
+{"ts":"2026-06-03T10:08:45Z","kind":"bash","session_id":"sess_fail","cwd":"/proj","command":"pytest tests/test_export.py -x","exit_code":1,"description":"Re-run export tests, still failing on timeout"}
+{"ts":"2026-06-03T10:12:30Z","kind":"prompt","session_id":"sess_fail","cwd":"/proj","prompt":"maybe it is not the handler — check the worker timeout in the config"}
+{"ts":"2026-06-03T10:14:02Z","kind":"edit","session_id":"sess_fail","cwd":"/proj","tool":"Edit","file_path":"/proj/config/gunicorn.conf.py"}
+{"ts":"2026-06-03T10:14:33Z","kind":"bash","session_id":"sess_fail","cwd":"/proj","command":"pytest tests/test_export.py -x","exit_code":0,"description":"Export tests pass with raised worker timeout"}
+{"ts":"2026-06-03T10:15:10Z","kind":"bash","session_id":"sess_fail","cwd":"/proj","command":"curl -sf localhost:8000/api/export?rows=200000 -o /dev/null","exit_code":0,"description":"Large export succeeds end to end"}
+{"ts":"2026-06-03T10:16:00Z","kind":"stop","session_id":"sess_fail","cwd":"/proj","last_message":"Fixed: the 500 was the gunicorn worker timeout (30s) killing large exports, not the handler. Streaming rewrite in api/export.py kept, timeout raised in config/gunicorn.conf.py."}

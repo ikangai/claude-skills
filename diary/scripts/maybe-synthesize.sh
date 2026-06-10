@@ -4,12 +4,12 @@
 # when the current session has accumulated substantive work and no entry
 # has been written for it yet.
 #
-# The script does NOT synthesize anything itself. It only decides whether
-# the in-session Claude should be asked to apply the diary skill's
-# synthesis workflow before stopping. The actual prose-writing happens
-# inside the still-live session, where the full conversation context is
-# available — preserving the principle that originally argued against any
-# kind of automatic synthesis.
+# When the trigger conditions hold, the entry is written by a local model
+# by default (synthesize-local.sh → LM Studio, zero Claude tokens). If the
+# local server is unreachable or returns garbage — or DIARY_SYNTH=claude
+# is set — the script falls back to blocking Stop and asking the
+# in-session Claude to apply the synthesis workflow, so an entry is never
+# silently lost.
 #
 # Invocation (from .claude/settings.json under Stop):
 #   .claude/skills/diary/scripts/maybe-synthesize.sh
@@ -132,6 +132,32 @@ for f in "$DIARY_DIR"/*.md; do
   fi
 done
 [[ "$ENTRY_EXISTS" -eq 1 ]] && exit 0
+
+# Synthesis mode — defaults to "local": all trigger conditions met mean we
+# write the entry here via the local model (synthesize-local.sh →
+# LM Studio) instead of nudging Claude. Silent exit on success or decline;
+# on any failure (server down, empty output) fall through to the block
+# directive so in-session Claude still writes the entry. Set
+# DIARY_SYNTH=claude to skip the local attempt and always nudge. Hook
+# timeout note: generation plus a JIT model load needs "timeout": 300 on
+# this hook in settings.json.
+#
+# The attempt's output lands in .dev-diary/.last-local-synth.log
+# (overwritten each attempt) — the hook itself must stay silent on stdout,
+# but a failed local attempt with discarded stderr is undiagnosable after
+# the fact.
+if [[ "${DIARY_SYNTH:-local}" == "local" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  if [[ -x "$SCRIPT_DIR/synthesize-local.sh" ]]; then
+    if "$SCRIPT_DIR/synthesize-local.sh" --events "$LOG" --session "$SESSION_ID" \
+        >"$DIARY_DIR/.last-local-synth.log" 2>&1; then
+      exit 0
+    else
+      printf 'local attempt failed: exit=%s ts=%s\n' "$?" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$DIARY_DIR/.last-local-synth.log" 2>/dev/null
+    fi
+  fi
+fi
 
 # All conditions met — block Stop and inject a synthesis directive.
 jq -nc --arg edits "$EDIT_COUNT" '{

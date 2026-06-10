@@ -1,0 +1,7 @@
+{"ts":"2026-06-01T14:30:02Z","kind":"prompt","session_id":"sess_pivot","cwd":"/proj","prompt":"add the shishi bucket implementation"}
+{"ts":"2026-06-01T14:31:15Z","kind":"edit","session_id":"sess_pivot","cwd":"/proj","tool":"Write","file_path":"/proj/src/bucket.py"}
+{"ts":"2026-06-01T14:33:48Z","kind":"bash","session_id":"sess_pivot","cwd":"/proj","command":"pytest tests/test_bucket.py","exit_code":1,"description":"Run the bucket tests"}
+{"ts":"2026-06-01T14:35:21Z","kind":"prompt","session_id":"sess_pivot","cwd":"/proj","prompt":"the ring buffer drops too much, can we weight by relevance"}
+{"ts":"2026-06-01T14:42:09Z","kind":"edit","session_id":"sess_pivot","cwd":"/proj","tool":"Edit","file_path":"/proj/src/bucket.py"}
+{"ts":"2026-06-01T14:43:32Z","kind":"bash","session_id":"sess_pivot","cwd":"/proj","command":"pytest tests/test_bucket.py","exit_code":0,"description":"Re-run the bucket tests"}
+{"ts":"2026-06-01T14:45:00Z","kind":"stop","session_id":"sess_pivot","cwd":"/proj","last_message":"Rewrote the bucket as a content-aware filter at ingestion; ring buffer and token-count weighting both dropped high-relevance events. Tests pass."}

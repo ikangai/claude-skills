@@ -1,0 +1,4 @@
+{"fixture":"pivot-canonical.jsonl","expect":"entry","note":"canonical ring-buffer pivot from events-schema.md"}
+{"fixture":"routine-no-entry.jsonl","expect":"no_entry","note":"read-only Q&A plus one typo fix — does not clear the bar"}
+{"fixture":"failure-loop.jsonl","expect":"entry","note":"repeated test failures; fix lands in gunicorn config, not the handler"}
+{"fixture":"user-correction.jsonl","expect":"entry","note":"hand-rolled LRU thrown away after user push-back, redis instead"}

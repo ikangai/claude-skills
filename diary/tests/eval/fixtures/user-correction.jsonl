@@ -1,0 +1,11 @@
+{"ts":"2026-06-04T15:00:05Z","kind":"prompt","session_id":"sess_corr","cwd":"/proj","prompt":"add caching to the search endpoint, results are recomputed on every request"}
+{"ts":"2026-06-04T15:03:10Z","kind":"edit","session_id":"sess_corr","cwd":"/proj","tool":"Write","file_path":"/proj/src/search_cache.py"}
+{"ts":"2026-06-04T15:05:22Z","kind":"edit","session_id":"sess_corr","cwd":"/proj","tool":"Edit","file_path":"/proj/src/search.py"}
+{"ts":"2026-06-04T15:06:01Z","kind":"bash","session_id":"sess_corr","cwd":"/proj","command":"pytest tests/test_search.py","exit_code":0,"description":"Search tests pass with LRU cache"}
+{"ts":"2026-06-04T15:06:30Z","kind":"stop","session_id":"sess_corr","cwd":"/proj","last_message":"Added an in-process LRU cache (search_cache.py, 256 entries, 60s TTL) in front of the ranking call."}
+{"ts":"2026-06-04T15:09:14Z","kind":"prompt","session_id":"sess_corr","cwd":"/proj","prompt":"no — we already run redis everywhere, do not hand-roll an in-process LRU. use redis so the cache is shared across the four web workers"}
+{"ts":"2026-06-04T15:10:02Z","kind":"bash","session_id":"sess_corr","cwd":"/proj","command":"rm src/search_cache.py","exit_code":0,"description":"Remove the hand-rolled LRU cache"}
+{"ts":"2026-06-04T15:13:40Z","kind":"edit","session_id":"sess_corr","cwd":"/proj","tool":"Write","file_path":"/proj/src/cache_redis.py"}
+{"ts":"2026-06-04T15:15:12Z","kind":"edit","session_id":"sess_corr","cwd":"/proj","tool":"Edit","file_path":"/proj/src/search.py"}
+{"ts":"2026-06-04T15:16:09Z","kind":"bash","session_id":"sess_corr","cwd":"/proj","command":"pytest tests/test_search.py","exit_code":0,"description":"Search tests pass with redis cache"}
+{"ts":"2026-06-04T15:17:00Z","kind":"stop","session_id":"sess_corr","cwd":"/proj","last_message":"Replaced the LRU with a redis-backed cache in cache_redis.py; keys include the query hash and ranking version, TTL 60s. Shared across workers now."}

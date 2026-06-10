@@ -69,7 +69,7 @@ Add the following to the project's `.claude/settings.json` under the top-level `
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR/.claude/skills/diary/scripts/maybe-synthesize.sh\"",
-            "timeout": 5
+            "timeout": 300
           }
         ]
       }
@@ -86,11 +86,11 @@ Add the following to the project's `.claude/settings.json` under the top-level `
 - **`SubagentStop`** — captures the final message from any sub-agent task. Useful when delegating work and the sub-agent returns something the synthesis should know about.
 - **`Stop`** — runs two commands per turn end:
   - `log-event.sh stop` captures Claude's final message at the end of each turn (light record of the session's beats).
-  - `maybe-synthesize.sh` checks whether the session has accumulated substantive work and no entry has been written yet; if so, it blocks Stop and injects a directive asking Claude to apply the synthesis workflow before the session ends.
+  - `maybe-synthesize.sh` checks whether the session has accumulated substantive work and no entry has been written yet; if so, it synthesizes the entry via the local model (default), or blocks Stop with a directive asking Claude to apply the synthesis workflow when the local server is unavailable or `DIARY_SYNTH=claude` is set. Its `timeout` is 300, not 5: local generation plus a JIT model load takes minutes, not seconds.
 
 ## Auto-synthesis via the Stop hook
 
-`maybe-synthesize.sh` is what makes diary entries write themselves. It is a *nudge*, not a synthesizer — the script never writes prose. It only decides whether the in-session Claude should be asked to apply the synthesis workflow before stopping. The actual writing happens inside the still-live session, so the full conversation context is available to the model. That preserves the original "prose needs live context" constraint while removing the requirement that the user type `/diary` explicitly.
+`maybe-synthesize.sh` is what makes diary entries write themselves. By default it synthesizes directly: when the trigger conditions hold, it calls `synthesize-local.sh`, which writes the entry via a local model (LM Studio) at zero Claude-token cost, and the session ends silently. The nudge path — blocking Stop and asking the in-session Claude to apply the synthesis workflow with full conversation context — remains as the fallback when the local server is unreachable or fails, and as the explicit mode under `DIARY_SYNTH=claude`. Either way, the requirement that the user type `/diary` is gone and an entry is never silently lost.
 
 The script fires when **all** of the following hold:
 
@@ -102,13 +102,15 @@ The script fires when **all** of the following hold:
 6. `.dev-diary/.no-auto-synth` does not exist (per-project opt-out marker).
 7. A working `stat` binary (BSD or GNU) is available — if neither variant works, the script bails silently rather than risk a false-positive nudge.
 
-When all six hold, the script emits JSON of the form `{"decision":"block","reason":"..."}` to stdout. Claude Code interprets that as a directive to keep the session alive and feed the reason back as a follow-up instruction. Claude then reads the events log, applies the bar from `SKILL.md` ("would a future agent benefit from knowing this beyond what the code itself records?"), and either writes the entry or briefly states that the session did not clear the bar.
+When all of these hold, the script first attempts local synthesis (the default — see below). If that path is disabled or fails, it emits JSON of the form `{"decision":"block","reason":"..."}` to stdout. Claude Code interprets that as a directive to keep the session alive and feed the reason back as a follow-up instruction. Claude then reads the events log, applies the bar from `SKILL.md` ("would a future agent benefit from knowing this beyond what the code itself records?"), and either writes the entry or briefly states that the session did not clear the bar.
 
 **Loop prevention.** Once the Stop hook injects, Claude responds, and the next Stop event fires with `stop_hook_active: true`. The script sees that flag and exits silently, so the session actually stops. If Claude wrote an entry, the fresh `*.md` file is newer than the session start anyway, so future Stop checks would also be silent.
 
 **Opting out per project.** Create `.dev-diary/.no-auto-synth` (any content, the existence of the file is the signal). Capture continues normally; the auto-synthesis nudge is suppressed. Useful for projects where you want the events log as audit trail but not the inline prose-writing turns.
 
 **Tuning the threshold.** The default of 2 edits matches the canonical pivot-shaped session in `references/events-schema.md`. To override it without editing the script, set the `DIARY_EDIT_THRESHOLD` environment variable — either globally in your shell profile or per-hook via the `env` field in `settings.json`. Higher = fewer false-positive nudges, more likely to miss short sessions worth recording. Lower = more nudges, more turns spent on Claude deciding "this didn't clear the bar." `EDIT_THRESHOLD=2` at the top of the script stays as the in-code default.
+
+**Local synthesis mode (the default).** `maybe-synthesize.sh` writes the entry itself via `synthesize-local.sh` and a local model (LM Studio) instead of nudging Claude — zero Claude tokens; it falls back to the block directive if the local server is unreachable or fails, and logs each attempt's output to `.dev-diary/.last-local-synth.log` for post-hoc diagnosis. Set `DIARY_SYNTH=claude` in the hook's environment to skip the local attempt and always nudge in-session Claude. The maybe-synthesize hook needs `"timeout": 300` in `settings.json` (the snippet above ships with it): generation plus a JIT model load far exceeds 5 seconds. See `references/local-models.md` for model choice and quality trade-offs.
 
 ## Read-only operations are intentionally not captured
 

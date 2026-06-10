@@ -1,0 +1,9 @@
+{"ts":"2026-06-02T09:10:00Z","kind":"prompt","session_id":"sess_routine","cwd":"/proj","prompt":"how does the retry logic in the queue worker handle poison messages?"}
+{"ts":"2026-06-02T09:10:40Z","kind":"bash","session_id":"sess_routine","cwd":"/proj","command":"grep -rn \"poison\" src/queue/","exit_code":0,"description":"Search for poison message handling"}
+{"ts":"2026-06-02T09:11:30Z","kind":"stop","session_id":"sess_routine","cwd":"/proj","last_message":"The worker moves messages to a dead-letter queue after max_retries (default 5), see src/queue/worker.py. No code changes needed."}
+{"ts":"2026-06-02T09:14:02Z","kind":"prompt","session_id":"sess_routine","cwd":"/proj","prompt":"and where is max_retries configured?"}
+{"ts":"2026-06-02T09:14:30Z","kind":"bash","session_id":"sess_routine","cwd":"/proj","command":"grep -rn \"max_retries\" config/","exit_code":0,"description":"Find max_retries configuration"}
+{"ts":"2026-06-02T09:15:05Z","kind":"stop","session_id":"sess_routine","cwd":"/proj","last_message":"config/queue.yml, max_retries: 5. Overridable per deployment via QUEUE_MAX_RETRIES."}
+{"ts":"2026-06-02T09:18:11Z","kind":"prompt","session_id":"sess_routine","cwd":"/proj","prompt":"there is a typo in the README, 'recieve' — fix it"}
+{"ts":"2026-06-02T09:18:42Z","kind":"edit","session_id":"sess_routine","cwd":"/proj","tool":"Edit","file_path":"/proj/README.md"}
+{"ts":"2026-06-02T09:18:55Z","kind":"stop","session_id":"sess_routine","cwd":"/proj","last_message":"Fixed the typo in README.md."}

@@ -1,6 +1,6 @@
 ---
 name: diary
-description: Maintains a per-project development diary capturing the narrative of how code got built — what was tried, what broke, where direction changed, what was learned. Use this skill when the user invokes /diary to synthesize a session into an entry, when a Stop-hook directive arrives at end-of-turn asking for auto-synthesis, when a notable pivot or learning moment occurs mid-session that should be captured before context fades, or when starting work in an area where prior diary entries in .dev-diary/ might provide useful context. Entries are first-person markdown in .dev-diary/ at project root; raw session events accumulate in .dev-diary/.events.jsonl via Claude Code hooks, and a Stop hook nudges synthesis automatically when the session has accumulated substantive work.
+description: Maintains a per-project development diary capturing the narrative of how code got built — what was tried, what broke, where direction changed, what was learned. Use this skill when the user invokes /diary to synthesize a session into an entry, when a Stop-hook directive arrives at end-of-turn asking for auto-synthesis, when a notable pivot or learning moment occurs mid-session that should be captured before context fades, when starting work in an area where prior diary entries in .dev-diary/ might provide useful context, or when the user wants entries synthesized in-session by Claude instead of the default local model (LM Studio, offline, zero token cost). Entries are first-person markdown in .dev-diary/ at project root; raw session events accumulate in .dev-diary/.events.jsonl via Claude Code hooks, and a Stop hook synthesizes entries automatically via the local model when the session has accumulated substantive work, falling back to an in-session nudge when the local server is unavailable.
 ---
 
 # Diary
@@ -17,8 +17,8 @@ The diary is per-project and lives in `.dev-diary/` at the project root, gitigno
 
 Invoke this skill in four situations:
 
-1. **The user types `/diary`.** Synthesize a diary entry from the current session.
-2. **The Stop hook injects an auto-synthesis directive.** At end-of-turn, `scripts/maybe-synthesize.sh` checks whether the session has accumulated substantive work (file edits at or above the threshold — default 2, configurable via the `DIARY_EDIT_THRESHOLD` env var — with no entry written yet and no opt-out marker present). When all conditions hold, the hook blocks Stop and feeds back a directive asking you to apply the synthesis workflow before the session ends. Treat that directive exactly like a manual `/diary` invocation — read the events, apply the bar, and either write the entry or briefly say it does not clear the bar. Do not ask the user; just decide and act.
+1. **The user types `/diary`.** Synthesize a diary entry from the current session, using the local model first (see "Synthesis workflow").
+2. **The Stop hook injects an auto-synthesis directive.** At end-of-turn, `scripts/maybe-synthesize.sh` checks whether the session has accumulated substantive work (file edits at or above the threshold — default 2, configurable via the `DIARY_EDIT_THRESHOLD` env var — with no entry written yet and no opt-out marker present). When all conditions hold, the hook synthesizes the entry itself via the local model (LM Studio) and the session ends silently. Only when the local server is unreachable or fails — or `DIARY_SYNTH=claude` is set — does the hook block Stop and feed back a directive asking you to apply the synthesis workflow. Treat that directive exactly like a manual `/diary` invocation — read the events, apply the bar, and either write the entry or briefly say it does not clear the bar. Do not ask the user; just decide and act.
 3. **A significant pivot or learning moment occurs mid-session.** When direction changes notably or a surprising lesson emerges that would be lost by session end, capture it as a short entry without waiting for the user to ask. Examples: realizing the initial approach is wrong and rewriting, discovering a library behaves differently than expected, the user correcting course after several wrong attempts.
 4. **Starting work on an unfamiliar area.** Check `.dev-diary/` for entries relevant to the area before beginning. Read what's there. Surface relevant findings briefly to the user before proceeding.
 
@@ -50,7 +50,11 @@ For more examples covering different session shapes (pivots, sub-agent coordinat
 
 ## Synthesis workflow
 
-When invoked to write an entry:
+When invoked to write an entry, try the local model first:
+
+0. **Run local synthesis.** From the skill's base directory, run `scripts/synthesize-local.sh` (it defaults to the latest session in the events log, which during a live session is the current one). Three outcomes: the script writes an entry and prints its path — validate it with `tests/check-entry.sh <entry> .dev-diary/.events.jsonl` and, if the linter passes, report the path to the user and stop here; the model declines with "NO ENTRY" — relay that in one sentence and stop; the script fails (exit 1: server down, empty output) or the linter reports failures — delete any failed entry file and fall back to in-session synthesis, steps 1–6 below. One exception: if the local entry is sound but misses a decisive *why* that only the live conversation holds (a pivot's reason, a user correction), amend it with a targeted edit rather than rewriting.
+
+When falling back to in-session synthesis:
 
 1. **Read the raw events for this session.** Open `.dev-diary/.events.jsonl` and read events from the current session. The session ID is in the hook envelope; if running without that context, use the most recent events (the file is append-only and chronological). The events tell you *what* happened with timestamps; the conversation context tells you *why* and *how*. Use both. For the events.jsonl schema, see `references/events-schema.md`.
 
@@ -63,6 +67,19 @@ When invoked to write an entry:
 5. **Write the entry.** Apply the voice rules. Walk the work chronologically. Surface reversals and decisions explicitly. End with one short lesson sentence only if genuinely earned.
 
 6. **Save the file and tell the user briefly.** One sentence: "Wrote `.dev-diary/2026-05-18-shishi-bucket-event-accumulator.md`." No further commentary.
+
+## Local synthesis (LM Studio)
+
+Synthesis can also run on a local model instead of in-session. `scripts/synthesize-local.sh` reads one session's events from `.dev-diary/.events.jsonl`, asks an OpenAI-compatible server (LM Studio, default `http://localhost:1234/v1`) to write the entry in the diary voice, and writes the dated, slugged file. It applies the same bar — the model may decline with "NO ENTRY" for routine sessions.
+
+Local synthesis is the default path — for the Stop hook's auto-synthesis and for manual `/diary` invocations alike. Zero Claude tokens, works offline. The trade-off: the local model sees only the events, not the conversation, so its entries are thinner on the *why* behind decisions; in-session synthesis remains the fallback whenever the local server is unavailable, and the higher-context option when an entry needs conversation-only reasoning. Set `DIARY_SYNTH=claude` to opt back into in-session synthesis for the Stop hook.
+
+```bash
+scripts/synthesize-local.sh                  # latest session; gemma if served, else first model
+scripts/synthesize-local.sh --session ID --model openai/gpt-oss-20b
+```
+
+Configuration via env vars (`DIARY_LM_URL`, `DIARY_LM_MODEL`, `DIARY_LM_MAX_TOKENS`, …), measured model quality, and the recommended default model (`google/gemma-4-26b-a4b`, preferred automatically when the server lists it) are documented in `references/local-models.md`. After a local synthesis, `tests/check-entry.sh <entry> <events>` validates the entry against the voice rules and the events — regenerate or fix if it reports failures.
 
 ## Reading prior entries
 
@@ -91,7 +108,7 @@ The `.dev-diary/` directory belongs in `.gitignore` by default. The user can opt
 Two halves of the skill run as Claude Code hooks defined in `.claude/settings.json`:
 
 - **Capture.** `scripts/log-event.sh` runs on `PostToolUse` (Write/Edit/MultiEdit and Bash), `UserPromptSubmit`, `SubagentStop`, and `Stop`. It appends normalized events to `.dev-diary/.events.jsonl` as the session proceeds. Read-only operations (Read/Grep/Glob/LS) are deliberately excluded as noise.
-- **Auto-trigger.** `scripts/maybe-synthesize.sh` runs as a second command on the `Stop` hook. It never writes prose — it only inspects the events log for the current session, and if the conditions are met (edits at or above the configured threshold, no entry yet, no opt-out, not already in a Stop-hook loop), it emits a JSON directive that blocks Stop and asks the in-session Claude to apply the synthesis workflow. The actual entry is written by Claude with full live conversation context.
+- **Auto-trigger.** `scripts/maybe-synthesize.sh` runs as a second command on the `Stop` hook. It inspects the events log for the current session, and if the conditions are met (edits at or above the configured threshold, no entry yet, no opt-out, not already in a Stop-hook loop), it writes the entry via the local model (`synthesize-local.sh` → LM Studio) — the default. If the local server is unreachable or fails, or `DIARY_SYNTH=claude` is set, it instead emits a JSON directive that blocks Stop and asks the in-session Claude to apply the synthesis workflow with full live conversation context.
 
 For the hook configuration, install steps, conditions, threshold tuning, and the per-project `.dev-diary/.no-auto-synth` opt-out marker, see `references/hooks-setup.md`.
 
