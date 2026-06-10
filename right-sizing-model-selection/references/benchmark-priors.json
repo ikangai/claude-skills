@@ -1,0 +1,58 @@
+{
+  "updated": "2026-06-10",
+  "note": "Benchmark-derived candidate orderings (population evidence). Cheapest-plausible first. A prior orders the probe, it never skips it. Sources, scores and caveats: references/benchmarks.md. Model names are the EXACT dispatch ids used by scripts/llm and recorded in kb.jsonl. Local-model caveat: published scores are for official full-precision releases; local quantized/community builds (MLX, -ud, finetunes) can score materially lower.",
+  "task_types": {
+    "classification": {
+      "order": ["openai/gpt-oss-20b", "qwen/qwen3-coder-30b", "google/gemma-4-26b-a4b", "haiku"],
+      "basis": "No dedicated public leaderboard; IFEval/LiveBench-IF are weak proxies. Local KB evidence dominates here (gpt-oss & qwen-coder both 10/10 locally)."
+    },
+    "extraction": {
+      "order": ["qwen/qwen3-coder-30b", "openai/gpt-oss-20b", "google/gemma-4-26b-a4b", "haiku", "sonnet"],
+      "basis": "No strong public benchmark (ExtractBench emerging); schema discipline proxies via IFEval. Local KB evidence dominates (qwen-coder 8.8 local)."
+    },
+    "summarization": {
+      "order": ["qwen/qwen3-coder-30b", "openai/gpt-oss-20b", "haiku", "sonnet"],
+      "basis": "Public summarization benchmarks unreliable (reference summaries judged worse than zero-shot LLM output, TACL 2024). Ordering from local KB (qwen-coder 8.5, gpt-oss 8.0, haiku 9.5 paid)."
+    },
+    "translation": {
+      "order": ["qwen/qwen3-coder-30b", "openai/gpt-oss-20b", "google/gemma-4-26b-a4b", "haiku", "sonnet"],
+      "basis": "WMT has no entries for these locals; multilingual proxy MMMLU: gemma 86.3, sonnet 89.3, haiku 83.0. Local KB: qwen-coder 10.0x2, gpt-oss 9.9x3 on DE->EN (routing table recommends qwen-coder)."
+    },
+    "proofreading": {
+      "order": ["or:openai/gpt-oss-120b", "or:deepseek/deepseek-v4-flash", "haiku", "sonnet"],
+      "basis": "GEC research: strong chat models over-rewrite — restraint task. Local KB: all small locals FAIL (gpt-oss-20b 3.0). Calibrated 2026-06-10: or:gpt-oss-120b 10.0 and or:deepseek-v4-flash 10.0 at <1/10th haiku price; haiku 9.0 / sonnet 10.0 remain the no-external-data options."
+    },
+    "qa-factual": {
+      "order": ["qwen3.6-35b-a3b-configi-mlx", "google/gemma-4-26b-a4b", "openai/gpt-oss-20b", "haiku", "sonnet"],
+      "basis": "MMLU-Pro: qwen3.6-35B 85.2 > gemma4-26b 82.6 > nemotron 78.3; gpt-oss only plain MMLU 85.3. Haiku ~77 (low conf), sonnet via MMMLU 89.3."
+    },
+    "codegen-simple": {
+      "order": ["qwen/qwen3-coder-30b", "qwen3.6-35b-a3b-configi-mlx", "google/gemma-4-26b-a4b", "openai/gpt-oss-20b", "haiku"],
+      "basis": "LiveCodeBench v6: qwen3.6-35B 80.4, gemma4-26b 77.1, nemotron 68.3, glm-flash 64.0. qwen3-coder is coder-tuned (KB extraction-passing; codegen unproven locally — probe)."
+    },
+    "codegen-complex": {
+      "order": ["qwen3.6-35b-a3b-configi-mlx", "haiku", "sonnet", "opus", "fable"],
+      "basis": "SWE-bench Verified: fable 95.0, opus4.8 88.6, sonnet4.6 79.6, haiku 73.3, qwen3.6-35B 73.4, gpt-oss-20b 60.7(high), glm-flash 59.2. Discount 2-5pts for memorization (SWE-bench Illusion). For repo-level agentic work prefer sonnet+; SWE-bench Pro discriminates at the top (fable 80.3 vs opus4.8 69.2)."
+    },
+    "code-review": {
+      "order": ["openai/gpt-oss-20b", "haiku", "sonnet", "opus"],
+      "basis": "No mature public benchmark (2026 survey: fragmented). Weak proxy SWE-bench. Local KB n=1: gpt-oss & haiku 9.0 on short contained snippets; keep opus/fable for large-module subtle-correctness reviews."
+    },
+    "reasoning": {
+      "order": ["qwen3.6-35b-a3b-configi-mlx", "openai/gpt-oss-20b", "google/gemma-4-26b-a4b", "haiku", "sonnet", "opus"],
+      "basis": "MMLU-Pro + AIME: qwen3.6-35B 85.2/92.7, gpt-oss 91.7 AIME (high effort), gemma 82.6/88.3, haiku 80.7 AIME-no-tools, sonnet GPQA 89.9, opus4.8 GPQA 93.6. GPQA saturated at top — use MMLU-Pro/LiveBench to discriminate."
+    },
+    "analysis": {
+      "order": ["google/gemma-4-26b-a4b", "haiku", "sonnet", "opus"],
+      "basis": "LMArena overall: opus4.8 ~1479-1482, sonnet4.6 1470, gemma4-26b 1438, haiku 1411 (style-bias caveat). Local KB n=1: haiku 9.0 > sonnet 8.0 > opus 6.0 on grounded analysis — probe before trusting either signal."
+    },
+    "creative-short": {
+      "order": ["google/gemma-4-26b-a4b", "haiku", "sonnet", "opus"],
+      "basis": "LMArena Creative Writing: opus4.8 1454-1475, sonnet 1449, gemma4-26b 1403, haiku 1387, glm-flash 1312. Gemma is the strongest local for prose per Arena."
+    },
+    "creative-long": {
+      "order": ["sonnet", "opus", "fable"],
+      "basis": "EQ-Bench longform + LMArena Creative favor frontier tiers for coherence over length; no local-model evidence. Probe before committing locals."
+    }
+  }
+}
