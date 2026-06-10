@@ -15,15 +15,21 @@
 #
 # Usage:
 #   synthesize-local.sh [--events FILE] [--session ID] [--out DIR]
-#                       [--model ID] [--dry-run] [--stdout]
+#                       [--model ID] [--backend local|sonnet]
+#                       [--dry-run] [--stdout]
 #
 #   --events FILE   events log (default: $CLAUDE_PROJECT_DIR/.dev-diary/.events.jsonl)
 #   --session ID    session to synthesize (default: last session in the log)
 #   --out DIR       output directory (default: directory of the events file)
-#   --model ID      model id (default: $DIARY_LM_MODEL, else
-#                   google/gemma-4-26b-a4b if the server lists it — the
-#                   measured best, see references/local-models.md — else
-#                   the first non-embedding model the server reports)
+#   --model ID      model id (default: $DIARY_LM_MODEL, else the model in
+#                   .synth-config, else google/gemma-4-26b-a4b if the
+#                   server lists it — the measured best, see
+#                   references/local-models.md — else the first
+#                   non-embedding model the server reports)
+#   --backend B     "local" (LM Studio) or "sonnet" (headless
+#                   `claude -p --model sonnet`). Default: the backend in
+#                   .synth-config next to the events log (written by
+#                   detect-synth.sh on first run), else "local".
 #   --dry-run       print the prompt and exit without calling the server
 #   --stdout        print the entry instead of writing a file
 #
@@ -36,6 +42,9 @@
 #                        return empty content)
 #   DIARY_LM_TIMEOUT     request timeout in seconds (default 300; first call
 #                        to an unloaded model includes JIT model load)
+#   DIARY_CLAUDE_BIN     claude CLI path for the sonnet backend (default:
+#                        claude_bin from .synth-config, else `claude` on PATH)
+#   DIARY_CLAUDE_MODEL   model for the sonnet backend (default "sonnet")
 #
 # Exit codes:
 #   0  entry written, printed, or model declined with NO ENTRY
@@ -55,6 +64,7 @@ TIMEOUT="${DIARY_LM_TIMEOUT:-300}"
 EVENTS="${CLAUDE_PROJECT_DIR:-$PWD}/.dev-diary/.events.jsonl"
 SESSION=""
 OUT_DIR=""
+BACKEND=""
 DRY_RUN=0
 TO_STDOUT=0
 
@@ -69,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --session) SESSION="${2:-}"; shift 2 ;;
     --out)     OUT_DIR="${2:-}"; shift 2 ;;
     --model)   MODEL="${2:-}"; shift 2 ;;
+    --backend) BACKEND="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --stdout)  TO_STDOUT=1; shift ;;
     -h|--help) usage ;;
@@ -84,6 +95,20 @@ if [[ -z "$EVENTS" || ! -f "$EVENTS" ]]; then
   exit 2
 fi
 [[ -z "$OUT_DIR" ]] && OUT_DIR="$(dirname "$EVENTS")"
+
+# Backend resolution: explicit flag, else the per-project detection result
+# next to the events log (written by detect-synth.sh), else local. The
+# config's "claude" value is the hook's nudge mode, not a synthesizer
+# backend — never valid here.
+CONFIG_FILE="$(dirname "$EVENTS")/.synth-config"
+if [[ -z "$BACKEND" ]]; then
+  BACKEND="$(jq -r '.backend // empty' "$CONFIG_FILE" 2>/dev/null)"
+  [[ -z "$BACKEND" || "$BACKEND" == "claude" ]] && BACKEND="local"
+fi
+if [[ "$BACKEND" != "local" && "$BACKEND" != "sonnet" ]]; then
+  echo "unknown backend: $BACKEND (expected local or sonnet)" >&2
+  exit 2
+fi
 
 # Default to the most recent session in the (chronological, append-only) log.
 if [[ -z "$SESSION" ]]; then
@@ -165,50 +190,82 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
-# Resolve the model if none was specified: prefer the measured-best model
-# from the 2026-06-10 evaluation (references/local-models.md) when the
-# server lists it, else the first non-embedding model the server reports.
-PREFERRED_MODEL="google/gemma-4-26b-a4b"
-if [[ -z "$MODEL" ]]; then
-  MODEL="$(curl -sS --max-time "$TIMEOUT" "$LM_URL/models" 2>/dev/null \
-    | jq -r --arg pref "$PREFERRED_MODEL" \
-      '[.data[].id | select(test("embed") | not)]
-       | (if index($pref) then $pref else first end) // empty' 2>/dev/null)"
-  if [[ -z "$MODEL" ]]; then
-    echo "could not discover a model from $LM_URL/models — is LM Studio running? (set DIARY_LM_MODEL to skip discovery)" >&2
+if [[ "$BACKEND" == "sonnet" ]]; then
+  # Sonnet backend: headless claude CLI. Resolve the binary — env override,
+  # then the absolute path recorded by detect-synth.sh (hooks can run with
+  # a leaner PATH than an interactive shell), then PATH lookup.
+  CLAUDE_BIN="${DIARY_CLAUDE_BIN:-}"
+  [[ -z "$CLAUDE_BIN" ]] && CLAUDE_BIN="$(jq -r '.claude_bin // empty' "$CONFIG_FILE" 2>/dev/null)"
+  [[ -z "$CLAUDE_BIN" ]] && CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
+  if [[ -z "$CLAUDE_BIN" || ! -x "$CLAUDE_BIN" ]]; then
+    echo "claude CLI not found for the sonnet backend (set DIARY_CLAUDE_BIN)" >&2
     exit 1
   fi
+  # Run from a throwaway cwd with the diary env scrubbed: the child claude
+  # session fires the same global hooks, and an inherited
+  # CLAUDE_PROJECT_DIR would pollute this project's events log with the
+  # synthesis session's own events.
+  WORKDIR="$(mktemp -d -t diary-sonnet.XXXXXX)"
+  CONTENT="$(printf '%s\n\n%s\n' "$SYSTEM_PROMPT" "$USER_PROMPT" \
+    | (cd "$WORKDIR" && env -u CLAUDE_PROJECT_DIR -u DIARY_SYNTH \
+        "$CLAUDE_BIN" -p --model "${DIARY_CLAUDE_MODEL:-sonnet}" 2>/dev/null))"
+  RC=$?
+  rm -rf "$WORKDIR"
+  if [[ "$RC" -ne 0 ]]; then
+    echo "claude -p (model ${DIARY_CLAUDE_MODEL:-sonnet}) failed with exit $RC" >&2
+    exit 1
+  fi
+  MODEL="${DIARY_CLAUDE_MODEL:-sonnet} via claude CLI"
+else
+  # Resolve the model if none was specified: the detected model persisted
+  # in .synth-config, else discovery — preferring the measured-best model
+  # from the 2026-06-10 evaluation (references/local-models.md) when the
+  # server lists it, else the first non-embedding model the server reports.
+  PREFERRED_MODEL="google/gemma-4-26b-a4b"
+  if [[ -z "$MODEL" ]]; then
+    MODEL="$(jq -r '.model // empty' "$CONFIG_FILE" 2>/dev/null)"
+  fi
+  if [[ -z "$MODEL" ]]; then
+    MODEL="$(curl -sS --max-time "$TIMEOUT" "$LM_URL/models" 2>/dev/null \
+      | jq -r --arg pref "$PREFERRED_MODEL" \
+        '[.data[].id | select(test("embed") | not)]
+         | (if index($pref) then $pref else first end) // empty' 2>/dev/null)"
+    if [[ -z "$MODEL" ]]; then
+      echo "could not discover a model from $LM_URL/models — is LM Studio running? (set DIARY_LM_MODEL to skip discovery)" >&2
+      exit 1
+    fi
+  fi
+
+  REQUEST="$(jq -n \
+    --arg model "$MODEL" \
+    --arg system "$SYSTEM_PROMPT" \
+    --arg user "$USER_PROMPT" \
+    --argjson temp "$TEMP" \
+    --argjson max_tokens "$MAX_TOKENS" \
+    '{model: $model,
+      messages: [{role: "system", content: $system}, {role: "user", content: $user}],
+      temperature: $temp,
+      max_tokens: $max_tokens,
+      stream: false}')"
+
+  RESPONSE_FILE="$(mktemp -t diary-synth-response.XXXXXX)"
+  trap 'rm -f "$RESPONSE_FILE"' EXIT
+
+  HTTP_CODE="$(printf '%s' "$REQUEST" | curl -sS --max-time "$TIMEOUT" \
+    -o "$RESPONSE_FILE" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -d @- "$LM_URL/chat/completions" 2>/dev/null)" || {
+    echo "request to $LM_URL/chat/completions failed — is LM Studio running?" >&2
+    exit 1
+  }
+
+  if [[ "$HTTP_CODE" != "200" ]]; then
+    echo "server returned HTTP $HTTP_CODE: $(head -c 300 "$RESPONSE_FILE")" >&2
+    exit 1
+  fi
+
+  CONTENT="$(jq -r '.choices[0].message.content // empty' "$RESPONSE_FILE" 2>/dev/null)"
 fi
-
-REQUEST="$(jq -n \
-  --arg model "$MODEL" \
-  --arg system "$SYSTEM_PROMPT" \
-  --arg user "$USER_PROMPT" \
-  --argjson temp "$TEMP" \
-  --argjson max_tokens "$MAX_TOKENS" \
-  '{model: $model,
-    messages: [{role: "system", content: $system}, {role: "user", content: $user}],
-    temperature: $temp,
-    max_tokens: $max_tokens,
-    stream: false}')"
-
-RESPONSE_FILE="$(mktemp -t diary-synth-response.XXXXXX)"
-trap 'rm -f "$RESPONSE_FILE"' EXIT
-
-HTTP_CODE="$(printf '%s' "$REQUEST" | curl -sS --max-time "$TIMEOUT" \
-  -o "$RESPONSE_FILE" -w '%{http_code}' \
-  -H 'Content-Type: application/json' \
-  -d @- "$LM_URL/chat/completions" 2>/dev/null)" || {
-  echo "request to $LM_URL/chat/completions failed — is LM Studio running?" >&2
-  exit 1
-}
-
-if [[ "$HTTP_CODE" != "200" ]]; then
-  echo "server returned HTTP $HTTP_CODE: $(head -c 300 "$RESPONSE_FILE")" >&2
-  exit 1
-fi
-
-CONTENT="$(jq -r '.choices[0].message.content // empty' "$RESPONSE_FILE" 2>/dev/null)"
 
 # Strip reasoning blocks (<think>…</think>) and truncate at the first
 # chat-template token leak (<|user|>, <|im_end|>, …) — both observed

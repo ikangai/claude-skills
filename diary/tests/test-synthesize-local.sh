@@ -16,7 +16,8 @@ set -u
 # Isolate from the machine's diary configuration — settings.json env blocks
 # (e.g. DIARY_LM_MODEL pins) leak into test runs and break discovery cases.
 unset DIARY_SYNTH DIARY_LM_URL DIARY_LM_MODEL DIARY_LM_TEMP \
-  DIARY_LM_MAX_TOKENS DIARY_LM_TIMEOUT 2>/dev/null || true
+  DIARY_LM_MAX_TOKENS DIARY_LM_TIMEOUT \
+  DIARY_SUITABLE_MODELS DIARY_CLAUDE_BIN DIARY_CLAUDE_MODEL 2>/dev/null || true
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../scripts/synthesize-local.sh"
@@ -274,6 +275,77 @@ if [[ $rc -eq 2 ]]; then
   ok "missing events file exits 2"
 else
   bad "missing events file exits 2" "rc=$rc out=$out"
+fi
+
+# Claude CLI stub for the sonnet-backend cases: logs the stdin prompt for
+# assertions, prints a valid SLUG + entry.
+STUB="$SANDBOX/claude-stub"
+cat > "$STUB" <<EOF
+#!/usr/bin/env bash
+cat > "$SANDBOX/stub-prompt.log"
+printf 'SLUG: sonnet-stub-entry\n\nStarted on the stub work. I edited bucket.py, watched pytest fail, and pivoted to a content-aware filter. The second run passed. Recency is a poor proxy for relevance.\n'
+EOF
+chmod +x "$STUB"
+
+# --- 16: sonnet backend writes the entry via the claude CLI -------------------
+reset_out
+out="$(DIARY_CLAUDE_BIN="$STUB" \
+  "$SCRIPT" --events "$EVENTS" --session sess_b --out "$OUT" --backend sonnet 2>&1)"; rc=$?
+if [[ $rc -eq 0 && -f "$OUT/$TODAY-sonnet-stub-entry.md" ]] \
+  && grep -q "Session events" "$SANDBOX/stub-prompt.log"; then
+  ok "sonnet backend writes entry, prompt arrives on stdin"
+else
+  bad "sonnet backend writes entry, prompt arrives on stdin" "rc=$rc out=$out files=$(ls "$OUT")"
+fi
+
+# --- 17: sonnet backend honors a NO ENTRY decline ------------------------------
+reset_out
+cat > "$STUB" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'NO ENTRY\nroutine session, nothing decision-shaped\n'
+EOF
+out="$(DIARY_CLAUDE_BIN="$STUB" \
+  "$SCRIPT" --events "$EVENTS" --session sess_b --out "$OUT" --backend sonnet 2>&1)"; rc=$?
+if [[ $rc -eq 0 && -z "$(ls "$OUT")" ]] && printf '%s' "$out" | grep -q "declined"; then
+  ok "sonnet backend honors NO ENTRY"
+else
+  bad "sonnet backend honors NO ENTRY" "rc=$rc out=$out files=$(ls "$OUT")"
+fi
+
+# --- 18: sonnet backend without a claude CLI fails nonzero --------------------
+reset_out
+out="$(DIARY_CLAUDE_BIN=/nonexistent/claude \
+  "$SCRIPT" --events "$EVENTS" --session sess_b --out "$OUT" --backend sonnet 2>&1)"; rc=$?
+if [[ $rc -eq 1 && -z "$(ls "$OUT")" ]] && printf '%s' "$out" | grep -qi "claude CLI not found"; then
+  ok "sonnet without claude CLI exits 1"
+else
+  bad "sonnet without claude CLI exits 1" "rc=$rc out=$out"
+fi
+
+# --- 19: backend comes from .synth-config when no --backend flag is given -----
+reset_out
+cat > "$STUB" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'SLUG: config-backend-entry\n\nStarted on the config-driven run. I edited bucket.py, pytest failed, then passed after the ingestion filter change. Detection config decided the backend, not a flag.\n'
+EOF
+printf '{"backend":"sonnet"}\n' > "$SANDBOX/.synth-config"
+out="$(DIARY_CLAUDE_BIN="$STUB" \
+  "$SCRIPT" --events "$EVENTS" --session sess_b --out "$OUT" 2>&1)"; rc=$?
+rm -f "$SANDBOX/.synth-config"
+if [[ $rc -eq 0 && -f "$OUT/$TODAY-config-backend-entry.md" ]]; then
+  ok "backend resolved from .synth-config"
+else
+  bad "backend resolved from .synth-config" "rc=$rc out=$out files=$(ls "$OUT")"
+fi
+
+# --- 20: unknown backend is a usage error --------------------------------------
+out="$("$SCRIPT" --events "$EVENTS" --backend gpt5 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && printf '%s' "$out" | grep -q "unknown backend"; then
+  ok "unknown backend exits 2"
+else
+  bad "unknown backend exits 2" "rc=$rc out=$out"
 fi
 
 echo

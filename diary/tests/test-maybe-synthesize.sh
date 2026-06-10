@@ -17,12 +17,24 @@ set -u
 # Isolate from the machine's diary configuration — settings.json env blocks
 # (e.g. DIARY_SYNTH or DIARY_LM_MODEL) leak into test runs.
 unset DIARY_SYNTH DIARY_EDIT_THRESHOLD DIARY_LM_URL DIARY_LM_MODEL \
-  DIARY_LM_TEMP DIARY_LM_MAX_TOKENS DIARY_LM_TIMEOUT 2>/dev/null || true
+  DIARY_LM_TEMP DIARY_LM_MAX_TOKENS DIARY_LM_TIMEOUT \
+  DIARY_SUITABLE_MODELS DIARY_CLAUDE_BIN DIARY_CLAUDE_MODEL 2>/dev/null || true
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../scripts/maybe-synthesize.sh"
 SANDBOX="$(mktemp -d -t diary-synth-test.XXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
+
+# Claude CLI stub for the sonnet-backend cases — lives outside $SANDBOX
+# because reset() wipes that directory between cases.
+SANDBOX_STUB_DIR="$(mktemp -d -t diary-synth-stub.XXXXXX)"
+trap 'rm -rf "$SANDBOX" "$SANDBOX_STUB_DIR"' EXIT
+cat > "$SANDBOX_STUB_DIR/claude-stub" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'SLUG: sonnet-stub-entry\n\nStarted on the stub work. I edited the files, ran the commands, and the second run passed after the first one failed. The fix was in the configuration rather than the handler, which I only saw after rereading the failing output. Configuration defaults deserve the first look when behavior differs between runs.\n'
+EOF
+chmod +x "$SANDBOX_STUB_DIR/claude-stub"
 
 PASS=0
 FAIL=0
@@ -179,7 +191,7 @@ MOCK_CONTENT='SLUG: local-mode-entry
 Started on the bucket work. I edited the files, ran the commands, and the second run passed after the first one failed. The fix was in the configuration rather than the handler, which I only saw after rereading the failing output. Configuration defaults deserve the first look when behavior differs between runs.' \
   python3 "$(dirname "$0")/mock-lm-server.py" > "$SANDBOX/port.txt" &
 MOCK_PID=$!
-trap 'kill "$MOCK_PID" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
+trap 'kill "$MOCK_PID" 2>/dev/null; rm -rf "$SANDBOX" "$SANDBOX_STUB_DIR"' EXIT
 MOCK_PORT=""
 for _ in $(seq 1 20); do
   MOCK_PORT="$(head -1 "$SANDBOX/port.txt" 2>/dev/null)"
@@ -194,16 +206,18 @@ else
   echo "FAIL: DIARY_SYNTH=local wrote the entry — $(ls "$SANDBOX/.dev-diary" 2>/dev/null)"; FAIL=$((FAIL+1))
 fi
 
-# Case 16: DIARY_SYNTH unset — local is the DEFAULT mode. Same setup as
-# case 15 but without DIARY_SYNTH: the hook must still synthesize locally.
+# Case 16: DIARY_SYNTH unset — first run triggers detection. The pinned
+# DIARY_LM_MODEL is served by the mock, so detection writes a "local"
+# config and the hook synthesizes locally, all in one Stop.
 reset
 write_events sess16 prompt edit bash edit
-run_case "DIARY_SYNTH unset, live server → silent (local is default)" "silent" "$(envelope sess16)" \
+run_case "DIARY_SYNTH unset, live server → silent (detect → local)" "silent" "$(envelope sess16)" \
   -u DIARY_SYNTH "DIARY_LM_URL=http://127.0.0.1:$MOCK_PORT/v1" "DIARY_LM_MODEL=mock-chat-model"
-if ls "$SANDBOX/.dev-diary/"*-local-mode-entry.md >/dev/null 2>&1; then
-  echo "PASS: default mode wrote the entry locally"; PASS=$((PASS+1))
+if ls "$SANDBOX/.dev-diary/"*-local-mode-entry.md >/dev/null 2>&1 \
+  && [[ "$(jq -r '.backend' "$SANDBOX/.dev-diary/.synth-config" 2>/dev/null)" == "local" ]]; then
+  echo "PASS: detection wrote a local config and the entry"; PASS=$((PASS+1))
 else
-  echo "FAIL: default mode wrote the entry locally — $(ls "$SANDBOX/.dev-diary" 2>/dev/null)"; FAIL=$((FAIL+1))
+  echo "FAIL: detection wrote a local config and the entry — $(ls -a "$SANDBOX/.dev-diary" 2>/dev/null)"; FAIL=$((FAIL+1))
 fi
 
 # Case 17: DIARY_SYNTH=claude opts out of local synthesis — block directive
@@ -219,12 +233,51 @@ else
 fi
 kill "$MOCK_PID" 2>/dev/null
 
-# Case 18: default (local) mode but the server is unreachable — falls back
-# to the block directive so in-session Claude still writes the entry.
+# Case 18: server unreachable on first run — detection picks sonnet; with
+# the claude CLI also unavailable (DIARY_CLAUDE_BIN points nowhere, so the
+# test never spends real tokens), synthesis fails and the hook falls back
+# to the block directive. The entry is never lost.
 reset
 write_events sess18 prompt edit bash edit
-run_case "default mode, server down → block fallback" "block" "$(envelope sess18)" \
-  -u DIARY_SYNTH "DIARY_LM_URL=http://127.0.0.1:1/v1" "DIARY_LM_TIMEOUT=3"
+run_case "first run, server down, no claude CLI → block fallback" "block" "$(envelope sess18)" \
+  -u DIARY_SYNTH "DIARY_LM_URL=http://127.0.0.1:1/v1" "DIARY_LM_TIMEOUT=3" \
+  "DIARY_CLAUDE_BIN=/nonexistent/claude"
+if [[ "$(jq -r '.backend' "$SANDBOX/.dev-diary/.synth-config" 2>/dev/null)" == "sonnet" ]]; then
+  echo "PASS: detection persisted the sonnet decision"; PASS=$((PASS+1))
+else
+  echo "FAIL: detection persisted the sonnet decision — $(cat "$SANDBOX/.dev-diary/.synth-config" 2>/dev/null)"; FAIL=$((FAIL+1))
+fi
+
+# A claude CLI stub for the sonnet-backend cases: swallows the prompt on
+# stdin, prints a valid SLUG + entry. Keeps the tests offline and free.
+STUB="$SANDBOX_STUB_DIR/claude-stub"
+
+# Case 19: first run, server down, claude CLI present (stub) — the full
+# fallback chain: detect → sonnet → entry written via the stub, silent.
+reset
+write_events sess19 prompt edit bash edit
+run_case "first run, server down, stub claude → silent (sonnet)" "silent" "$(envelope sess19)" \
+  -u DIARY_SYNTH "DIARY_LM_URL=http://127.0.0.1:1/v1" "DIARY_LM_TIMEOUT=3" \
+  "DIARY_CLAUDE_BIN=$STUB"
+if ls "$SANDBOX/.dev-diary/"*-sonnet-stub-entry.md >/dev/null 2>&1 \
+  && [[ "$(jq -r '.backend' "$SANDBOX/.dev-diary/.synth-config" 2>/dev/null)" == "sonnet" ]]; then
+  echo "PASS: sonnet backend wrote the entry"; PASS=$((PASS+1))
+else
+  echo "FAIL: sonnet backend wrote the entry — $(ls -a "$SANDBOX/.dev-diary" 2>/dev/null)"; FAIL=$((FAIL+1))
+fi
+
+# Case 20: explicit DIARY_SYNTH=sonnet skips detection entirely — entry via
+# the stub, and no .synth-config is created.
+reset
+write_events sess20 prompt edit bash edit
+run_case "DIARY_SYNTH=sonnet, stub claude → silent, no detection" "silent" "$(envelope sess20)" \
+  "DIARY_SYNTH=sonnet" "DIARY_CLAUDE_BIN=$STUB"
+if ls "$SANDBOX/.dev-diary/"*-sonnet-stub-entry.md >/dev/null 2>&1 \
+  && [[ ! -f "$SANDBOX/.dev-diary/.synth-config" ]]; then
+  echo "PASS: explicit sonnet wrote the entry without a config"; PASS=$((PASS+1))
+else
+  echo "FAIL: explicit sonnet wrote the entry without a config — $(ls -a "$SANDBOX/.dev-diary" 2>/dev/null)"; FAIL=$((FAIL+1))
+fi
 
 echo
 echo "----"

@@ -1,6 +1,12 @@
 # Local models (LM Studio)
 
-How to run diary synthesis on a local model, which models measure well, and how to wire fully automatic local synthesis into the Stop hook.
+How to run diary synthesis on a local model, which models measure well, how the first-run backend detection works, and how fully automatic synthesis is wired into the Stop hook.
+
+## Backend detection (first run)
+
+`scripts/detect-synth.sh` decides the synthesis backend once per project. It probes the LM Studio server (`DIARY_LM_URL`, default `http://localhost:1234/v1`) and walks the candidate models in order — an explicit `DIARY_LM_MODEL` pin first, then the suitable list (`google/gemma-4-26b-a4b`, `qwen3.6-35b-a3b-configi-mlx` — the models that cleared the eval below; override with comma-separated `DIARY_SUITABLE_MODELS`). The first candidate the server serves wins: backend `local` with that model. Server unreachable or nothing suitable: backend `sonnet` — headless `claude -p --model sonnet` (binary resolved via `DIARY_CLAUDE_BIN`, the absolute path recorded at detection time, or PATH; model via `DIARY_CLAUDE_MODEL`).
+
+The decision is persisted as JSON in `.dev-diary/.synth-config` and detection never runs again for the project. After the environment changes — LM Studio installed, a suitable model downloaded — delete the file or run `detect-synth.sh --force`. `DIARY_SYNTH=local|sonnet|claude` overrides the config entirely without touching it.
 
 ## How it works
 
@@ -25,12 +31,15 @@ scripts/synthesize-local.sh --stdout                 # print entry, write nothin
 | `DIARY_LM_TEMP` | `0.2` | sampling temperature |
 | `DIARY_LM_MAX_TOKENS` | `4096` | completion budget — reasoning models think inside this; below ~4096 they can return empty content |
 | `DIARY_LM_TIMEOUT` | `300` | request timeout (s); the first call to an unloaded model includes LM Studio's JIT load (10s–2min) |
+| `DIARY_SUITABLE_MODELS` | eval-proven list | comma-separated override of the models detection accepts |
+| `DIARY_CLAUDE_BIN` | from `.synth-config`, else PATH | claude CLI for the sonnet backend |
+| `DIARY_CLAUDE_MODEL` | `sonnet` | model passed to `claude -p` on the sonnet backend |
 
 Exit codes: `0` entry written or model declined; `1` server/model failure (callers can fall back to in-session synthesis); `2` usage error.
 
 ## Automatic local synthesis (Stop hook)
 
-This is the default. When the auto-synthesis conditions are met (edit threshold reached, no entry yet, no opt-out), `scripts/maybe-synthesize.sh` runs `synthesize-local.sh` directly instead of blocking Stop and nudging Claude. Sessions end silently and the entry appears in `.dev-diary/` — zero Claude tokens. If the local server is down or returns garbage, the hook falls back to the normal block directive, so the entry is never silently lost. Each attempt's output is written to `.dev-diary/.last-local-synth.log` — check it first when an expected entry didn't appear or the nudge fired despite a running server. Set `DIARY_SYNTH=claude` to skip the local attempt entirely and always nudge in-session Claude (the pre-2026-06 behavior).
+This is the default. When the auto-synthesis conditions are met (edit threshold reached, no entry yet, no opt-out), `scripts/maybe-synthesize.sh` resolves the backend — running `detect-synth.sh` first when no `.synth-config` exists yet — and calls `synthesize-local.sh` with it instead of blocking Stop and nudging Claude. Sessions end silently and the entry appears in `.dev-diary/` — zero Claude tokens on the local backend, one headless Sonnet call on the sonnet backend. If synthesis fails (server died since detection, claude CLI missing, garbage output), the hook falls back to the normal block directive, so the entry is never silently lost. Each attempt's output is written to `.dev-diary/.last-local-synth.log` — check it first when an expected entry didn't appear or the nudge fired despite a running server. Set `DIARY_SYNTH=claude` to skip external synthesis entirely and always nudge in-session Claude (the pre-2026-06 behavior).
 
 Two cautions:
 

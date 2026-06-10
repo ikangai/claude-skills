@@ -4,12 +4,15 @@
 # when the current session has accumulated substantive work and no entry
 # has been written for it yet.
 #
-# When the trigger conditions hold, the entry is written by a local model
-# by default (synthesize-local.sh → LM Studio, zero Claude tokens). If the
-# local server is unreachable or returns garbage — or DIARY_SYNTH=claude
-# is set — the script falls back to blocking Stop and asking the
-# in-session Claude to apply the synthesis workflow, so an entry is never
-# silently lost.
+# When the trigger conditions hold, the entry is written by the detected
+# synthesis backend: on the project's first run, detect-synth.sh probes
+# LM Studio for a suitable model (backend "local", zero Claude tokens) and
+# falls back to "sonnet" (headless `claude -p --model sonnet`) when no
+# suitable local model is available; the decision persists in
+# .dev-diary/.synth-config. If synthesis fails — or DIARY_SYNTH=claude is
+# set — the script falls back to blocking Stop and asking the in-session
+# Claude to apply the synthesis workflow, so an entry is never silently
+# lost.
 #
 # Invocation (from .claude/settings.json under Stop):
 #   .claude/skills/diary/scripts/maybe-synthesize.sh
@@ -133,27 +136,39 @@ for f in "$DIARY_DIR"/*.md; do
 done
 [[ "$ENTRY_EXISTS" -eq 1 ]] && exit 0
 
-# Synthesis mode — defaults to "local": all trigger conditions met mean we
-# write the entry here via the local model (synthesize-local.sh →
-# LM Studio) instead of nudging Claude. Silent exit on success or decline;
-# on any failure (server down, empty output) fall through to the block
-# directive so in-session Claude still writes the entry. Set
-# DIARY_SYNTH=claude to skip the local attempt and always nudge. Hook
-# timeout note: generation plus a JIT model load needs "timeout": 300 on
-# this hook in settings.json.
+# Synthesis backend. An explicit DIARY_SYNTH wins: "claude" means always
+# nudge the in-session Claude (skip straight to the directive), "local" or
+# "sonnet" force that synthesizer. Otherwise the per-project detection
+# result in .dev-diary/.synth-config decides — and on the project's first
+# run (no config yet) detect-synth.sh probes LM Studio for a suitable
+# model (backend "local") and falls back to "sonnet" (headless
+# `claude -p --model sonnet`) when the server is down or serves no
+# suitable model. Synthesis happens here, silently, on success or decline;
+# any failure falls through to the block directive so the entry is never
+# lost. Hook timeout note: generation plus a JIT model load needs
+# "timeout": 300 on this hook in settings.json.
 #
 # The attempt's output lands in .dev-diary/.last-local-synth.log
 # (overwritten each attempt) — the hook itself must stay silent on stdout,
-# but a failed local attempt with discarded stderr is undiagnosable after
-# the fact.
-if [[ "${DIARY_SYNTH:-local}" == "local" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# but a failed attempt with discarded stderr is undiagnosable after the
+# fact.
+MODE="${DIARY_SYNTH:-}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -z "$MODE" ]]; then
+  CONFIG="$DIARY_DIR/.synth-config"
+  if [[ ! -f "$CONFIG" && -x "$SCRIPT_DIR/detect-synth.sh" ]]; then
+    "$SCRIPT_DIR/detect-synth.sh" --config "$CONFIG" --quiet >/dev/null 2>&1
+  fi
+  MODE="$(jq -r '.backend // empty' "$CONFIG" 2>/dev/null)"
+  [[ -z "$MODE" ]] && MODE=local
+fi
+if [[ "$MODE" == "local" || "$MODE" == "sonnet" ]]; then
   if [[ -x "$SCRIPT_DIR/synthesize-local.sh" ]]; then
-    if "$SCRIPT_DIR/synthesize-local.sh" --events "$LOG" --session "$SESSION_ID" \
+    if "$SCRIPT_DIR/synthesize-local.sh" --backend "$MODE" --events "$LOG" --session "$SESSION_ID" \
         >"$DIARY_DIR/.last-local-synth.log" 2>&1; then
       exit 0
     else
-      printf 'local attempt failed: exit=%s ts=%s\n' "$?" \
+      printf '%s attempt failed: exit=%s ts=%s\n' "$MODE" "$?" \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$DIARY_DIR/.last-local-synth.log" 2>/dev/null
     fi
   fi
