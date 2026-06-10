@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Knowledge base of model/task/prompt fits. Append-only JSONL + distilled routing table.
+
+Usage:
+  kb record --task-type extraction --model haiku --quality 8.5 \
+            [--prompt-notes "strict schema + 1 example"] [--latency-ms 1200] \
+            [--tokens-in 500 --tokens-out 200] [--source probe|benchmark|production] [--notes "..."]
+  kb query --task-type extraction [--threshold 7]   # per-model stats + recommendation
+  kb query                                          # stats for all task types
+  kb prior --task-type codegen-complex              # benchmark-derived candidate ordering
+  kb distill                                        # regenerate knowledge/routing-table.md
+  kb types                                          # canonical task taxonomy
+
+Records live in knowledge/kb.jsonl next to this skill (override: MODEL_KB_PATH).
+Quality is 0-10 as judged against the task's acceptance criteria.
+"""
+import argparse
+import json
+import os
+import sys
+import time
+from collections import defaultdict
+from pathlib import Path
+
+SKILL_DIR = Path(__file__).resolve().parent.parent
+KB_PATH = Path(os.environ.get("MODEL_KB_PATH", SKILL_DIR / "knowledge" / "kb.jsonl"))
+TABLE_PATH = KB_PATH.parent / "routing-table.md"
+PRIORS_PATH = SKILL_DIR / "references" / "benchmark-priors.json"
+
+# Canonical task taxonomy — free-form types are allowed, but matching these
+# makes query/distill aggregation useful across sessions.
+TASK_TYPES = [
+    "classification", "extraction", "summarization", "translation",
+    "proofreading", "qa-factual", "codegen-simple", "codegen-complex",
+    "code-review", "reasoning", "analysis", "creative-short", "creative-long",
+]
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pricing import cost_rank  # noqa: E402 — real $/MTok ranking, incl. or: models
+
+
+def load():
+    if not KB_PATH.exists():
+        return []
+    records = []
+    for line in KB_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            print(f"warning: skipping malformed line: {line[:80]}", file=sys.stderr)
+            continue
+        # schema-invalid records (valid JSON, missing keys / wrong types) must not
+        # crash query/distill — skip them loudly instead
+        if not (isinstance(rec, dict) and isinstance(rec.get("task_type"), str)
+                and isinstance(rec.get("model"), str)
+                and isinstance(rec.get("quality"), (int, float))):
+            print(f"warning: skipping schema-invalid record: {line[:80]}", file=sys.stderr)
+            continue
+        records.append(rec)
+    return records
+
+
+def record(args):
+    if args.task_type not in TASK_TYPES:
+        close = [t for t in TASK_TYPES if t in args.task_type or args.task_type in t]
+        hint = f" — did you mean '{close[0]}'?" if close else ""
+        print(f"warning: '{args.task_type}' is not a canonical task type{hint} "
+              f"(see `kb types`); variants fragment the KB", file=sys.stderr)
+    rec = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "task_type": args.task_type,
+        "model": args.model,
+        "quality": args.quality,
+        "source": args.source,
+    }
+    for k in ("prompt_notes", "latency_ms", "tokens_in", "tokens_out", "notes"):
+        v = getattr(args, k)
+        if v is not None:
+            rec[k] = v
+    KB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with KB_PATH.open("a") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    print(f"recorded: {rec['task_type']} / {rec['model']} quality={rec['quality']}")
+
+
+def aggregate(records):
+    """-> {task_type: {model: {n, mean_quality, mean_latency_ms, prompt_notes[]}}}"""
+    agg = defaultdict(lambda: defaultdict(lambda: {"n": 0, "q": [], "lat": [], "notes": []}))
+    for r in records:
+        cell = agg[r["task_type"]][r["model"]]
+        cell["n"] += 1
+        cell["q"].append(r["quality"])
+        if r.get("latency_ms"):
+            cell["lat"].append(r["latency_ms"])
+        if r.get("prompt_notes") and r["prompt_notes"] not in cell["notes"]:
+            cell["notes"].append(r["prompt_notes"])
+    return agg
+
+
+def recommend(models, threshold, min_n=2):
+    """Cheapest model whose mean quality >= threshold with enough evidence."""
+    ok = [(m, s) for m, s in models.items()
+          if s["n"] >= min_n and sum(s["q"]) / s["n"] >= threshold]
+    if not ok:
+        return None
+    ok.sort(key=lambda x: (cost_rank(x[0]), -(sum(x[1]["q"]) / x[1]["n"])))
+    return ok[0][0]
+
+
+def fmt_stats(task_type, models, threshold):
+    lines = [f"## {task_type}"]
+    rows = sorted(models.items(), key=lambda x: cost_rank(x[0]))
+    for m, s in rows:
+        mq = sum(s["q"]) / s["n"]
+        lat = f"{sum(s['lat'])//len(s['lat'])}ms" if s["lat"] else "-"
+        flag = "PASS" if mq >= threshold else "fail"
+        lines.append(f"  {m:<28} n={s['n']:<3} quality={mq:.1f} [{flag}] latency={lat}")
+        for note in s["notes"][:2]:
+            lines.append(f"      prompt: {note}")
+    rec = recommend(models, threshold)
+    lines.append(f"  -> recommended: {rec or 'no model has enough passing evidence — probe first'}")
+    return "\n".join(lines)
+
+
+def load_priors():
+    if not PRIORS_PATH.exists():
+        return None
+    try:
+        return json.loads(PRIORS_PATH.read_text())
+    except json.JSONDecodeError as e:
+        print(f"warning: benchmark-priors.json unreadable: {e}", file=sys.stderr)
+        return None
+
+
+def fmt_prior(task_type, priors):
+    """One-line benchmark-derived prior for a task type, clearly marked as PRIOR."""
+    entry = (priors or {}).get("task_types", {}).get(task_type)
+    if not entry:
+        return None
+    order = " > ".join(entry["order"])
+    return (f"  benchmark PRIOR (population evidence, {priors.get('updated', '?')}): {order}\n"
+            f"      basis: {entry['basis']}\n"
+            f"      a prior orders the probe, it never skips it — see references/benchmarks.md")
+
+
+def query(args):
+    records = load()
+    priors = load_priors()
+    if not records:
+        print("knowledge base is empty — run probes or benchmarks to populate it")
+        if args.task_type and priors:
+            p = fmt_prior(args.task_type, priors)
+            if p:
+                print(p)
+        return
+    agg = aggregate(records)
+    types = [args.task_type] if args.task_type else sorted(agg)
+    for t in types:
+        if t not in agg:
+            print(f"## {t}\n  no records — probe first (see scripts/probe)")
+            p = fmt_prior(t, priors)
+            if p:
+                print(p)
+            continue
+        print(fmt_stats(t, agg[t], args.threshold))
+        if recommend(agg[t], args.threshold) is None:
+            p = fmt_prior(t, priors)
+            if p:
+                print(p)
+        print()
+
+
+def prior(args):
+    priors = load_priors()
+    if not priors:
+        print("no benchmark priors file (references/benchmark-priors.json) — see references/benchmarks.md")
+        return
+    types = [args.task_type] if args.task_type else sorted(priors.get("task_types", {}))
+    for t in types:
+        p = fmt_prior(t, priors)
+        print(f"## {t}\n{p}" if p else f"## {t}\n  no benchmark prior defined")
+        print()
+
+
+def distill(args):
+    records = load()
+    agg = aggregate(records)
+    lines = [
+        "# Routing table (auto-generated by `scripts/kb distill` — do not edit)",
+        "",
+        f"Distilled from {len(records)} records on {time.strftime('%Y-%m-%d')}.",
+        "Recommendation = cheapest model with mean quality >= 7.0 and n >= 2.",
+        "",
+        "| task type | recommended | evidence (model: quality x n) |",
+        "|---|---|---|",
+    ]
+    for t in sorted(agg):
+        rec = recommend(agg[t], 7.0) or "probe first"
+        ev = "; ".join(
+            f"{m}: {sum(s['q'])/s['n']:.1f}x{s['n']}"
+            for m, s in sorted(agg[t].items(), key=lambda x: cost_rank(x[0])))
+        lines.append(f"| {t} | {rec} | {ev} |")
+    TABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TABLE_PATH.write_text("\n".join(lines) + "\n")
+    print(f"wrote {TABLE_PATH} ({len(agg)} task types)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("record", help="append one observation")
+    p.add_argument("--task-type", required=True)
+    p.add_argument("--model", required=True)
+    p.add_argument("--quality", type=float, required=True, help="0-10 judged quality")
+    p.add_argument("--prompt-notes", default=None, help="what prompt style was used")
+    p.add_argument("--latency-ms", type=int, default=None)
+    p.add_argument("--tokens-in", type=int, default=None)
+    p.add_argument("--tokens-out", type=int, default=None)
+    p.add_argument("--source", default="production", choices=["probe", "benchmark", "production"])
+    p.add_argument("--notes", default=None)
+    p.set_defaults(func=record)
+
+    p = sub.add_parser("query", help="stats + recommendation per task type")
+    p.add_argument("--task-type", default=None)
+    p.add_argument("--threshold", type=float, default=7.0)
+    p.set_defaults(func=query)
+
+    p = sub.add_parser("distill", help="regenerate routing-table.md")
+    p.set_defaults(func=distill)
+
+    p = sub.add_parser("prior", help="benchmark-derived candidate ordering (population evidence)")
+    p.add_argument("--task-type", default=None)
+    p.set_defaults(func=prior)
+
+    p = sub.add_parser("types", help="print canonical task taxonomy")
+    p.set_defaults(func=lambda a: print("\n".join(TASK_TYPES)))
+
+    args = ap.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

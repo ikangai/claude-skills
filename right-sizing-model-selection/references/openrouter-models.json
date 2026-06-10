@@ -1,0 +1,17 @@
+{
+  "updated": "2026-06-10",
+  "note": "Curated OpenRouter candidates with live pricing (USD per MTok, fetched from the public /api/v1/models endpoint). Dispatch with the or: prefix via scripts/llm. This is a routing shortlist, not the full 339-model catalog — add entries as needs arise and re-check prices when refreshing benchmarks.md. :free variants have rate limits and possible data-retention differences; check OpenRouter's provider terms for sensitive workloads.",
+  "models": [
+    {"id": "z-ai/glm-4.7-flash", "usd_per_mtok_in": 0.06, "usd_per_mtok_out": 0.4, "ctx": 202752, "why": "Hosted twin of the locally-broken glm-4.7-flash (chat-template leak); benches SWE 59.2 / AIME 91.6. Use this instead of the local copy."},
+    {"id": "qwen/qwen3.6-27b", "usd_per_mtok_in": 0.289, "usd_per_mtok_out": 2.4, "ctx": 262144, "why": "Full-precision Qwen3.6-27B (won't load locally, needs ~45GB): SWE 77.2, GPQA 87.8, MMLU-Pro 86.2 — strongest open model in our priors."},
+    {"id": "qwen/qwen3.6-35b-a3b", "usd_per_mtok_in": 0.14, "usd_per_mtok_out": 1.0, "ctx": 262144, "why": "Official full-precision twin of the local community MLX build; use to check the local-build quality gap."},
+    {"id": "openai/gpt-oss-120b", "usd_per_mtok_in": 0.039, "usd_per_mtok_out": 0.18, "ctx": 131072, "why": "Bigger sibling of the best local generalist, dirt cheap."},
+    {"id": "openai/gpt-oss-120b:free", "usd_per_mtok_in": 0.0, "usd_per_mtok_out": 0.0, "ctx": 131072, "why": "Free variant — rate-limited; good for probes."},
+    {"id": "openai/gpt-oss-20b:free", "usd_per_mtok_in": 0.0, "usd_per_mtok_out": 0.0, "ctx": 131072, "why": "Free hosted twin of the local gpt-oss-20b — parallel scale-out when LM Studio's one-model-at-a-time constraint binds."},
+    {"id": "deepseek/deepseek-v4-flash", "usd_per_mtok_in": 0.098, "usd_per_mtok_out": 0.197, "ctx": 1048576, "why": "Cheapest strong generalist in the catalog; 1M context for big-input tasks no local model can hold."},
+    {"id": "deepseek/deepseek-v3.2", "usd_per_mtok_in": 0.229, "usd_per_mtok_out": 0.343, "ctx": 131072, "why": "Strong value all-rounder a notch above v4-flash."},
+    {"id": "google/gemma-4-26b-a4b-it:free", "usd_per_mtok_in": 0.0, "usd_per_mtok_out": 0.0, "ctx": 262144, "why": "Free hosted twin of the local gemma (best local prose per Arena); also full-precision comparison point."},
+    {"id": "moonshotai/kimi-k2.5", "usd_per_mtok_in": 0.35, "usd_per_mtok_out": 1.89, "ctx": 262144, "why": "Strong open agentic/writing model — creative and analysis probe candidate below sonnet price."},
+    {"id": "minimax/minimax-m2.5", "usd_per_mtok_in": 0.15, "usd_per_mtok_out": 0.9, "ctx": 204800, "why": "Cheap strong mid-tier; agentic-leaning."}
+  ]
+}

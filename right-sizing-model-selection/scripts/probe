@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Probe a task across candidate models to find the cheapest one that's good enough.
+
+Runs representative sample items through each candidate model, has a judge model
+score the outputs against your acceptance criteria, prints a ranked table, and
+(optionally) records the results into the knowledge base.
+
+Usage:
+  probe --task-type translation \
+        --task "Translate German support macros to English. Preserve {{placeholders}} and markdown exactly." \
+        --criteria "all placeholders byte-identical; markdown preserved; fluent, accurate English" \
+        --models haiku,qwen/qwen3.6-27b,openai/gpt-oss-20b \
+        --items-file samples.txt [--judge sonnet] [--threshold 7] [--record]
+
+Items file: sample inputs separated by lines containing only `---`.
+Probe 3-5 representative items — enough signal, minimal cost.
+Exit code 0; the recommendation line names the cheapest passing model.
+"""
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS))
+from pricing import cost_rank  # noqa: E402 — real $/MTok ranking, incl. or: models
+
+
+def run_llm(model, prompt, system=None, max_tokens=2048, timeout=300):
+    cmd = [sys.executable, str(SCRIPTS / "llm"), "--model", model, "--json",
+           "--max-tokens", str(max_tokens), "--timeout", str(timeout)]
+    if system:
+        cmd += ["--system", system]
+    proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                          timeout=timeout + 30)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip()[:300] or "dispatch failed")
+    return json.loads(proc.stdout)
+
+
+def parse_json_block(text):
+    """Extract the first JSON object from judge output (tolerates fences/prose)."""
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        raise ValueError(f"no JSON in judge output: {text[:200]}")
+    return json.loads(m.group(0))
+
+
+def judge_outputs(judge_model, task, criteria, items, outputs):
+    blocks = []
+    for i, (item, out) in enumerate(zip(items, outputs), 1):
+        blocks.append(f"### Item {i} input\n{item}\n\n### Item {i} candidate output\n{out}")
+    prompt = f"""You are grading a candidate model's outputs on a task. Be strict: the grade decides whether this model is trusted with a large batch.
+
+Task given to the candidate:
+{task}
+
+Acceptance criteria:
+{criteria}
+
+{chr(10).join(blocks)}
+
+Score each item 0-10 against the acceptance criteria (10 = flawless, 7 = acceptable for production, <=4 = unusable or violates a hard constraint). Any violated hard constraint (e.g. corrupted placeholder, invalid JSON, wrong language) caps that item's score at 4.
+
+Reply with ONLY this JSON, no other text:
+{{"scores": [<one number per item>], "issues": "<one line on the worst problems found, or 'none'>"}}"""
+    result = run_llm(judge_model, prompt, max_tokens=1000)
+    data = parse_json_block(result["text"])
+    scores = [float(s) for s in data["scores"]]
+    if len(scores) != len(items):
+        # too few scores would silently skew the mean (and the KB via --record);
+        # raising routes this into the caller's JUDGE ERROR handling
+        raise ValueError(f"judge returned {len(scores)} scores for {len(items)} items")
+    return scores, data.get("issues", "")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--task-type", required=True, help="canonical task type for the KB (see: kb types)")
+    ap.add_argument("--task", required=True, help="the instruction given to each candidate")
+    ap.add_argument("--criteria", required=True, help="acceptance criteria the judge scores against")
+    ap.add_argument("--models", required=True, help="comma-separated candidates, cheap-first")
+    ap.add_argument("--items-file", required=True, help="sample inputs separated by --- lines")
+    ap.add_argument("--judge", default="sonnet", help="judge model (default sonnet)")
+    ap.add_argument("--threshold", type=float, default=7.0)
+    ap.add_argument("--n", type=int, default=5, help="max items to probe")
+    ap.add_argument("--max-tokens", type=int, default=2048)
+    ap.add_argument("--record", action="store_true", help="record results into the knowledge base")
+    ap.add_argument("--prompt-notes", default=None, help="KB note describing the prompt style used")
+    args = ap.parse_args()
+
+    raw = Path(args.items_file).read_text()
+    items = [s.strip() for s in re.split(r"^---\s*$", raw, flags=re.MULTILINE) if s.strip()]
+    items = items[: args.n]
+    if not items:
+        sys.exit("error: no items found in items file")
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+
+    print(f"probing {len(models)} models x {len(items)} items (judge: {args.judge})\n")
+    results = []
+    for model in models:
+        outputs, lat, t_in, t_out, cost = [], [], 0, 0, 0.0
+        failed = None
+        for item in items:
+            try:
+                r = run_llm(model, f"{args.task}\n\n---\n\n{item}", max_tokens=args.max_tokens)
+            except Exception as e:
+                failed = str(e)
+                break
+            outputs.append(r["text"])
+            lat.append(r["latency_ms"])
+            t_in += r["tokens_in"]
+            t_out += r["tokens_out"]
+            cost += r["cost_usd"]
+        if failed:
+            print(f"  {model:<28} ERROR: {failed}")
+            results.append({"model": model, "mean": 0.0, "error": failed})
+            continue
+        try:
+            scores, issues = judge_outputs(args.judge, args.task, args.criteria, items, outputs)
+        except Exception as e:
+            print(f"  {model:<28} JUDGE ERROR: {e}")
+            results.append({"model": model, "mean": 0.0, "error": f"judge: {e}"})
+            continue
+        mean = sum(scores) / len(scores)
+        mean_lat = sum(lat) // len(lat)
+        verdict = "PASS" if mean >= args.threshold else "fail"
+        print(f"  {model:<28} quality={mean:.1f} [{verdict}] scores={scores} "
+              f"latency={mean_lat}ms cost=${cost:.4f} issues: {issues}")
+        results.append({"model": model, "mean": mean, "lat": mean_lat,
+                        "tin": t_in, "tout": t_out, "issues": issues})
+        if args.record:
+            cmd = [sys.executable, str(SCRIPTS / "kb"), "record",
+                   "--task-type", args.task_type, "--model", model,
+                   "--quality", f"{mean:.1f}", "--latency-ms", str(mean_lat),
+                   "--tokens-in", str(t_in), "--tokens-out", str(t_out),
+                   "--source", "probe"]
+            if args.prompt_notes:
+                cmd += ["--prompt-notes", args.prompt_notes]
+            if issues and issues != "none":
+                cmd += ["--notes", issues[:200]]
+            subprocess.run(cmd, check=False)
+
+    passing = [r for r in results if r.get("mean", 0) >= args.threshold]
+    passing.sort(key=lambda r: (cost_rank(r["model"]), -r["mean"]))
+    print()
+    if passing:
+        print(f"recommendation: {passing[0]['model']} "
+              f"(cheapest with quality {passing[0]['mean']:.1f} >= {args.threshold})")
+    else:
+        print(f"recommendation: NONE passed threshold {args.threshold} — "
+              f"escalate to a stronger tier or improve the prompt and re-probe")
+
+
+if __name__ == "__main__":
+    main()
