@@ -2,6 +2,22 @@
 
 All notable changes to the kanban skill are documented here.
 
+## 2026-06-10
+
+### Added
+
+- **`upgrade.sh` — rebuild an existing board on the current seed.** Deployed
+  boards never pick up seed fixes on their own: the CLI splices only the cards
+  JSON, so a board's runtime and body stay whatever generation they were
+  created from. `upgrade.sh` extracts the cards, rebuilds the file from the
+  current seed (fresh container with a new document UUID so stale browser
+  IndexedDB cannot shadow the new body), splices the cards back in, verifies
+  the round-trip, and atomically replaces the board, leaving a timestamped
+  `.bak-` backup beside it. Already-current boards are a no-op unless
+  `--force`.
+- **`rwa_splice.py write` subcommand.** Replaces the whole cards array in one
+  atomic operation; used by `upgrade.sh` so card escaping stays in one place.
+
 ## 2026-06-09
 
 ### Fixed

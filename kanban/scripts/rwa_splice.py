@@ -22,6 +22,7 @@ INLINE_DOC stays intact.
 
 Subcommands:
   read                       print cards JSON to stdout
+  write <json>               replace the whole cards array (JSON on stdin or as arg)
   add <json>                 append a card object (JSON on stdin or as arg)
   update <id> <json>         shallow-merge fields into card <id>
   delete <id>                remove card <id>
@@ -150,6 +151,32 @@ def cmd_read(args):
     print(json.dumps(cards, indent=2, ensure_ascii=False))
 
 
+def cmd_write(args):
+    text, s, e, _ = load(args.board)
+
+    raw = args.json if args.json else sys.stdin.read()
+    try:
+        cards = json.loads(raw)
+    except json.JSONDecodeError as err:
+        sys.stderr.write(f"rwa_splice write: input is not valid JSON: {err}\n")
+        sys.exit(3)
+    if not isinstance(cards, list):
+        sys.stderr.write("rwa_splice write: input must be a JSON array\n")
+        sys.exit(3)
+    seen = set()
+    for c in cards:
+        if not isinstance(c, dict) or not c.get('id'):
+            sys.stderr.write("rwa_splice write: every card must be an object with a non-empty 'id'\n")
+            sys.exit(3)
+        if c['id'] in seen:
+            sys.stderr.write(f"rwa_splice write: duplicate card id: {c['id']}\n")
+            sys.exit(3)
+        seen.add(c['id'])
+
+    save(args.board, text, s, e, cards)
+    print(len(cards))
+
+
 def cmd_add(args):
     text, s, e, cards = load(args.board)
 
@@ -242,6 +269,8 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     sub.add_parser('read').set_defaults(func=cmd_read)
+
+    w = sub.add_parser('write'); w.add_argument('--json', help="cards JSON array; stdin if omitted"); w.set_defaults(func=cmd_write)
 
     a = sub.add_parser('add'); a.add_argument('--json', help="card JSON; stdin if omitted"); a.set_defaults(func=cmd_add)
 

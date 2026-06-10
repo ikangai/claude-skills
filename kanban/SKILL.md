@@ -49,6 +49,14 @@ bash $CLAUDE_SKILL_DIR/scripts/init.sh
 
 Creates `.kanban/board.html` from a fresh rwa container and adds `.kanban/` to `.gitignore`. Idempotent — running again on an existing board is a no-op. Requires Node.js ≥ 20.16 (uses `npx rewritable@latest new`).
 
+### `upgrade.sh` — rebuild an existing board on the current seed
+
+```bash
+bash $CLAUDE_SKILL_DIR/scripts/upgrade.sh [path/to/board.html] [--force]
+```
+
+Deployed boards never pick up seed fixes on their own — the CLI splices only the cards JSON, so a board's runtime and body stay whatever generation they were created from. `upgrade.sh` reads the cards out of an existing board, rebuilds it from the current seed (fresh container, new document UUID so stale browser IndexedDB can't shadow the new body), splices the cards back in, verifies the round-trip, and atomically replaces the file, leaving a timestamped `.bak-` backup beside it. Defaults to `$CLAUDE_PROJECT_DIR/.kanban/board.html`; already-current boards are a no-op unless `--force`. Run it when a board misbehaves in ways the current seed has already fixed.
+
 ### `add.sh` — create a card
 
 ```bash
