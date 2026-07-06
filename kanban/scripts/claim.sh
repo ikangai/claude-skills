@@ -28,13 +28,16 @@ BOARD="$PROJECT_DIR/.kanban/board.html"
 
 CARD_ID=""
 AGENT_FLAG=""
+MODEL="${KANBAN_MODEL:-}"
 NO_MOVE=0
 FORCE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent=*) AGENT_FLAG="${1#*=}"; shift ;;
-    --agent)   AGENT_FLAG="$2"; shift 2 ;;
+    --agent)   [[ $# -ge 2 ]] || { echo "kanban claim: --agent needs a value" >&2; exit 1; }; AGENT_FLAG="$2"; shift 2 ;;
+    --model=*) MODEL="${1#*=}"; shift ;;
+    --model)   [[ $# -ge 2 ]] || { echo "kanban claim: --model needs a value" >&2; exit 1; }; MODEL="$2"; shift 2 ;;
     --no-move) NO_MOVE=1; shift ;;
     --force)   FORCE=1; shift ;;
     -*) echo "kanban claim: unknown flag $1" >&2; exit 1 ;;
@@ -72,11 +75,18 @@ if [[ "$FORCE" -ne 1 ]]; then
   fi
 fi
 
-if [[ "$NO_MOVE" -eq 1 ]]; then
-  PATCH=$(python3 -c "import json,sys; print(json.dumps({'assigned_to': sys.argv[1], 'claimed_at': sys.argv[2]}))" "$AGENT" "$NOW")
-else
-  PATCH=$(python3 -c "import json,sys; print(json.dumps({'assigned_to': sys.argv[1], 'claimed_at': sys.argv[2], 'status': 'in_progress'}))" "$AGENT" "$NOW")
-fi
+# Build the patch: always assigned_to + claimed_at; add status unless
+# --no-move; add model when one was supplied (flag or $KANBAN_MODEL).
+PATCH=$(python3 -c "
+import json, sys
+agent, now, model, no_move = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+patch = {'assigned_to': agent, 'claimed_at': now}
+if no_move != '1':
+    patch['status'] = 'in_progress'
+if model:
+    patch['model'] = model
+print(json.dumps(patch))
+" "$AGENT" "$NOW" "$MODEL" "$NO_MOVE")
 
 python3 "$SKILL_DIR/scripts/rwa_splice.py" --board "$BOARD" update "$CARD_ID" --json "$PATCH"
-echo "claimed $CARD_ID by $AGENT"
+echo "claimed $CARD_ID by $AGENT${MODEL:+ ($MODEL)}"

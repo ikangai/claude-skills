@@ -23,9 +23,9 @@ The skill runs in two modes: **explicit** (user asks) and **ambient** (you opera
 
 **Ambient triggers** (no permission needed when the project already has a `.kanban/board.html`):
 
-- **A substantive new task appears in the conversation** → `add.sh` then `claim.sh` in one step. Acknowledge with one line: "Added & claimed `<id>`." See [Ambient management](#ambient-management) for what counts as substantive.
-- **You start work that's already on the board** → `claim.sh <id>`. If it's already claimed by another agent (exit 2), surface the conflict instead of silently retrying.
-- **You finish the work on a card** → `move.sh <id> review` (or `done` if the user has already accepted it). Don't leave finished work in `in_progress`.
+- **A substantive new task appears in the conversation** → `add.sh` then `claim.sh --model=<you>` in one step. Acknowledge with one line: "Added & claimed `<id>`." See [Ambient management](#ambient-management) for what counts as substantive.
+- **You start work that's already on the board** → `claim.sh <id> --model=<you>` (stamps your model and starts the effort clock). If it's already claimed by another agent (exit 2), surface the conflict instead of silently retrying.
+- **You finish the work on a card** → `move.sh <id> review` (or `done` if the user has already accepted it), adding `--tokens=<n>` if you know the token count. Don't leave finished work in `in_progress`.
 - **You pivot, hit a wall, or hand off** → `note.sh` for the why, then `move.sh ... todo` or `assign.sh ... <other>` as appropriate.
 - **Starting a session in a multi-instance setup** (worktrees, multiple terminals) → `kanban list --status=in_progress` first to avoid stepping on another agent's work.
 
@@ -73,20 +73,26 @@ Prints the new card id on stdout. Default id is `YYYY-MM-DD-<slug>` where slug i
 ### `claim.sh` — claim a card
 
 ```bash
-bash $CLAUDE_SKILL_DIR/scripts/claim.sh <card-id> [--agent=<name>] [--no-move] [--force]
+bash $CLAUDE_SKILL_DIR/scripts/claim.sh <card-id> [--agent=<name>] [--model=<name>] [--no-move] [--force]
 ```
 
 Sets `assigned_to` + `claimed_at` and (unless `--no-move`) moves status to `in_progress`. Agent identity resolves from: `--agent` flag → `$KANBAN_AGENT_NAME` env var → 8-char hash of `$CLAUDE_SESSION_ID` → literal `agent`.
+
+`--model=<name>` stamps the model working the card — free-form, so any vendor fits (`--model="Opus 4.8"`, `Sonnet`, `GPT-5`, `Gemini`, `local:qwen`). Falls back to `$KANBAN_MODEL` if the flag is omitted. **When you claim a card, pass your own model** (or export `KANBAN_MODEL` once per session) so the board records who did the work. Moving the card to `in_progress` also starts its effort clock (see below).
 
 Exit code 2 if the card is already claimed by a different agent (use `--force` to take over). Use this exit-code check to detect cross-agent contention before doing duplicate work.
 
 ### `move.sh` — change a card's status
 
 ```bash
-bash $CLAUDE_SKILL_DIR/scripts/move.sh <card-id> <status>
+bash $CLAUDE_SKILL_DIR/scripts/move.sh <card-id> <status> [--tokens=<n>]
 ```
 
 Status is one of `todo`, `in_progress`, `review`, `done`. Moving to `todo` clears the assignment so another agent can pick it up; moving to `done` preserves it so credit is visible.
+
+`--tokens=<n>` records the total tokens the task needed (absolute count, not additive) — stamp it on the move to `review`/`done` when you know the figure, e.g. `move.sh <id> done --tokens=42100`.
+
+**Effort is tracked automatically.** Each status change banks or starts the card's `in_progress` clock, so `effort_seconds` accumulates the active time a card spends being worked — across pauses in review and back — without any flag. The board and `kanban list` show `model / effort / tokens` per card (a running clock is flagged live). You don't manage effort by hand; just move cards honestly and pass `--model` / `--tokens` when you have them. See `references/card-schema.md` → *Effort accounting*.
 
 ### `note.sh` — log a note on a card
 

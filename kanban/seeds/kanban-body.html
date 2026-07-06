@@ -43,6 +43,12 @@
 .kb-chip{font-family:var(--font-mono);font-size:9px;letter-spacing:.3px;background:var(--gray-100);color:var(--gray-600);padding:2px 7px;border-radius:100px;text-transform:lowercase;}
 .kb-chip.kb-chip-agent{background:var(--gray-900);color:var(--white);text-transform:none;letter-spacing:.5px;}
 .kb-chip.kb-chip-id{background:var(--white);border:1px solid var(--gray-200);color:var(--gray-400);font-size:9px;}
+/* model / effort / tokens — the per-card cost & attribution chips. Model and
+   token chips keep real casing (GPT-5, 42.1k, 1.2M); duration is all-lower. */
+.kb-chip.kb-chip-model{background:var(--white);border:1px solid var(--gray-300);color:var(--gray-800);text-transform:none;letter-spacing:.2px;}
+.kb-chip.kb-chip-effort{background:var(--gray-100);color:var(--gray-700);}
+.kb-chip.kb-chip-effort.kb-running{background:var(--white);border:1px solid var(--blue);color:var(--blue);}
+.kb-chip.kb-chip-tokens{background:var(--gray-100);color:var(--gray-700);text-transform:none;}
 
 .kb-empty{font-family:var(--font-mono);font-size:10px;color:var(--gray-300);text-align:center;padding:16px 8px;letter-spacing:.5px;}
 
@@ -128,12 +134,68 @@
     return tail.length > 22 ? tail.slice(0,22) + '…' : tail;
   }
 
+  // ─── cost & attribution helpers (mirror scripts/rwa_splice.py) ────────
+  // humanizeDuration/Tokens must format identically to list.sh so the board
+  // and the CLI agree; applyEffortTransition must match apply_effort_transition
+  // in rwa_splice.py so a human drag banks time the same way a CLI move does.
+  function humanizeDuration (sec) {
+    sec = Math.max(0, Math.floor(Number(sec) || 0));
+    if (sec < 60) return sec + 's';
+    const m = Math.floor(sec / 60);
+    if (m < 60) return m + 'm';
+    const h = Math.floor(m / 60), rm = m % 60;
+    if (h < 24) return rm ? (h + 'h ' + rm + 'm') : (h + 'h');
+    const d = Math.floor(h / 24), rh = h % 24;
+    return rh ? (d + 'd ' + rh + 'h') : (d + 'd');
+  }
+  function humanizeTokens (n) {
+    n = Math.max(0, Math.floor(Number(n) || 0));
+    if (n < 1000) return String(n);
+    const trim = x => String(x % 1 === 0 ? x : Math.round(x * 10) / 10);
+    if (n < 1e6) { const k = n / 1000; return (k >= 100 ? Math.round(k) : trim(k)) + 'k'; }
+    const mm = n / 1e6; return (mm >= 100 ? Math.round(mm) : trim(mm)) + 'M';
+  }
+  // Total effort so far = banked seconds + the current stint if the clock runs.
+  function effectiveEffortSeconds (c, nowMs) {
+    let base = Math.max(0, Math.floor(Number(c.effort_seconds) || 0));
+    if (c.effort_started_at) {
+      const started = Date.parse(c.effort_started_at);
+      if (!isNaN(started)) base += Math.max(0, Math.floor((nowMs - started) / 1000));
+    }
+    return base;
+  }
+  // Bank/start the in_progress clock on a status change. Mutates c in place.
+  function applyEffortTransition (c, oldStatus, newStatus, nowISO) {
+    if (oldStatus === newStatus) return;
+    const wasIp = oldStatus === 'in_progress';
+    const nowIp = newStatus === 'in_progress';
+    if (nowIp && !wasIp) {
+      if (!c.effort_started_at) c.effort_started_at = nowISO;
+    } else if (wasIp && !nowIp) {
+      const started = Date.parse(c.effort_started_at);
+      c.effort_started_at = null;
+      if (!isNaN(started)) {
+        const delta = Math.floor((Date.parse(nowISO) - started) / 1000);
+        if (delta > 0) c.effort_seconds = (Math.max(0, Math.floor(Number(c.effort_seconds) || 0))) + delta;
+      }
+    }
+  }
+
   function cardEl (c) {
     const pri = c.priority && ['high','medium','low'].includes(c.priority) ? c.priority : 'none';
     const tags = Array.isArray(c.tags) ? c.tags : [];
     const desc = c.description ? `<div class="kb-card-desc">${escHTML(c.description)}</div>` : '';
     const meta = [];
     if (c.assigned_to) meta.push(`<span class="kb-chip kb-chip-agent">${escHTML(c.assigned_to)}</span>`);
+    if (c.model) meta.push(`<span class="kb-chip kb-chip-model">◇ ${escHTML(String(c.model))}</span>`);
+    const eff = effectiveEffortSeconds(c, Date.now());
+    if (eff > 0 || c.effort_started_at) {
+      const running = c.effort_started_at ? ' kb-running' : '';
+      meta.push(`<span class="kb-chip kb-chip-effort${running}" title="time in progress">⏱ ${escHTML(humanizeDuration(eff))}</span>`);
+    }
+    if (c.tokens != null && Number(c.tokens) > 0) {
+      meta.push(`<span class="kb-chip kb-chip-tokens" title="tokens used">⛁ ${escHTML(humanizeTokens(c.tokens))}</span>`);
+    }
     for (const t of tags.slice(0,4)) meta.push(`<span class="kb-chip">${escHTML(t)}</span>`);
     meta.push(`<span class="kb-chip kb-chip-id">${escHTML(shortId(c.id))}</span>`);
     return `<div class="kb-card" draggable="true" data-id="${escHTML(c.id)}" data-priority="${pri}">
@@ -310,10 +372,15 @@
     const cards = readCards();
     const c = cards.find(x => x.id === id);
     if (!c || c.status === newStatus) return;
+    const prevStatus = c.status;
+    const nowISO = new Date().toISOString();
     c.status = newStatus;
     if (newStatus === 'in_progress' && !c.claimed_at) {
-      c.claimed_at = new Date().toISOString();
+      c.claimed_at = nowISO;
     }
+    // Bank/start the in_progress clock for this human drag, exactly as the
+    // CLI does on a `kanban move` (apply_effort_transition in rwa_splice.py).
+    applyEffortTransition(c, prevStatus, newStatus, nowISO);
     writeCards(cards);
     render();
     persistDocToIdb();
@@ -462,7 +529,13 @@
       if (newC && oldC && brC) {
         const result = Object.assign({}, newC);
         // Status: browser change wins if it differs from oldDisk.
-        if (brC.status !== oldC.status) result.status = brC.status;
+        if (brC.status !== oldC.status) {
+          result.status = brC.status;
+          // A local drag also re-timed the effort clock — carry the
+          // browser's effort fields so the drag's timing isn't lost.
+          result.effort_seconds = brC.effort_seconds;
+          result.effort_started_at = brC.effort_started_at;
+        }
         // claimed_at: ditto.
         if (brC.claimed_at !== oldC.claimed_at) result.claimed_at = brC.claimed_at;
         merged.push(result);
@@ -526,16 +599,17 @@
       merged = fileCards;
     } else {
       // The browser holds uncommitted local drags. The file owns the card set
-      // (the browser never creates cards) and every field — EXCEPT the status
-      // and claimed_at of the specific cards the user dragged, where the local
-      // drag wins (the documented same-card conflict policy). So CLI adds,
-      // deletes, notes, and moves of OTHER cards all come through, while the
-      // human's in-flight drags survive the reload.
+      // (the browser never creates cards) and every field — EXCEPT the status,
+      // claimed_at, and effort clock of the specific cards the user dragged,
+      // where the local drag wins (the documented same-card conflict policy).
+      // So CLI adds, deletes, notes, and moves of OTHER cards all come through,
+      // while the human's in-flight drags survive the reload.
       const brById = new Map(browserCards.map(c => [c.id, c]));
       merged = fileCards.map(fc => {
         const bc = brById.get(fc.id);
         if (!bc || !dragged.has(fc.id)) return fc;
-        return Object.assign({}, fc, { status: bc.status, claimed_at: bc.claimed_at });
+        return Object.assign({}, fc, { status: bc.status, claimed_at: bc.claimed_at,
+                                       effort_seconds: bc.effort_seconds, effort_started_at: bc.effort_started_at });
       });
     }
     if (eqShallow(merged, browserCards)) return;
