@@ -144,6 +144,66 @@ def save(path, text, body_start, body_end, cards):
         raise
 
 
+# ─── effort accounting ────────────────────────────────────────────────
+# "Effort" is the wall-clock a card spends in the in_progress column,
+# accumulated across every stint (a card can be worked, moved to review,
+# kicked back, worked again). Two fields carry it:
+#
+#   effort_seconds     int   — banked time from completed in_progress stints
+#   effort_started_at  ISO   — when the CURRENT in_progress stint began; null
+#                              whenever the card is not in_progress
+#
+# The clock starts on entry to in_progress and banks on exit. This logic
+# lives here (fired from cmd_update whenever a patch changes `status`) so
+# every CLI path — move, claim, assign --move — accounts identically. The
+# browser has a mirror of this in seeds/kanban-body.html for human drags.
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _parse_iso(s):
+    """Parse an ISO timestamp we might have written (CLI form, no fraction)
+    or the browser might have written (Date.toISOString, with milliseconds
+    and always a trailing Z). Returns a tz-aware UTC datetime, or None."""
+    if not s or not isinstance(s, str):
+        return None
+    t = s.strip()
+    if t.endswith('Z'):
+        t = t[:-1]
+    if '.' in t:
+        t = t.split('.', 1)[0]
+    try:
+        return datetime.strptime(t, '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def apply_effort_transition(card, new_status, now_iso):
+    """Update a card's effort fields for a status change from its current
+    status to new_status. No-op when the status isn't actually changing or
+    when neither side is in_progress. Mutates `card` in place."""
+    old_status = card.get('status')
+    if old_status == new_status:
+        return
+    was_ip = old_status == 'in_progress'
+    now_ip = new_status == 'in_progress'
+    if now_ip and not was_ip:
+        # Entering in_progress: start the clock (unless somehow already running).
+        if not card.get('effort_started_at'):
+            card['effort_started_at'] = now_iso
+    elif was_ip and not now_ip:
+        # Leaving in_progress: bank the elapsed stint and stop the clock.
+        started = _parse_iso(card.get('effort_started_at'))
+        card['effort_started_at'] = None
+        if started is not None:
+            end = _parse_iso(now_iso) or datetime.now(timezone.utc)
+            delta = int((end - started).total_seconds())
+            if delta > 0:
+                card['effort_seconds'] = int(card.get('effort_seconds') or 0) + delta
+
+
 # ─── subcommands ──────────────────────────────────────────────────────
 
 def cmd_read(args):
@@ -201,9 +261,16 @@ def cmd_add(args):
     card.setdefault('tags', [])
     card.setdefault('assigned_to', None)
     card.setdefault('claimed_at', None)
+    card.setdefault('model', None)
+    card.setdefault('tokens', None)
+    card.setdefault('effort_seconds', 0)
+    card.setdefault('effort_started_at', None)
     card.setdefault('notes', [])
     card.setdefault('subtasks', [])
     card.setdefault('created_at', datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+    # A card created directly in_progress should start its clock now.
+    if card['status'] == 'in_progress' and not card['effort_started_at']:
+        card['effort_started_at'] = _now_iso()
 
     cards.append(card)
     save(args.board, text, s, e, cards)
@@ -227,6 +294,11 @@ def cmd_update(args):
     if idx is None:
         sys.stderr.write(f"rwa_splice update: card not found: {args.id}\n")
         sys.exit(2)
+
+    # Effort accounting: if this patch changes the status, bank/start the
+    # in_progress clock BEFORE merging (the transition reads the old status).
+    if 'status' in patch:
+        apply_effort_transition(cards[idx], patch['status'], _now_iso())
 
     cards[idx].update(patch)
     save(args.board, text, s, e, cards)

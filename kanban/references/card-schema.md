@@ -14,6 +14,10 @@ A card is a JSON object inside the `kanban-cards` array. The CLI scripts create,
   "tags": ["auth", "refactor"],
   "assigned_to": "alpha",
   "claimed_at": "2026-05-20T09:55:27Z",
+  "model": "Sonnet",
+  "tokens": 42100,
+  "effort_seconds": 1620,
+  "effort_started_at": null,
   "notes": [
     { "ts": "2026-05-20T10:12:04Z", "by": "alpha", "text": "Picked express, not koa. Smaller surface area." }
   ],
@@ -34,6 +38,10 @@ A card is a JSON object inside the `kanban-cards` array. The CLI scripts create,
 | `tags` | string[] | no | `[]` | Free-form labels. Shown as chips on the card. |
 | `assigned_to` | string \| null | no | `null` | Agent identity. Set by `claim.sh` (self) or `assign.sh` (other). |
 | `claimed_at` | ISO timestamp \| null | no | `null` | When the current claim or assignment was made. |
+| `model` | string \| null | no | `null` | The model that worked the card — free-form so any vendor fits (`Sonnet`, `Opus 4.8`, `GPT-5`, `Gemini`, `local:qwen`). Set by `claim.sh --model=` or `$KANBAN_MODEL`. |
+| `tokens` | int \| null | no | `null` | Total tokens the task needed. Absolute count (not additive). Set via `move.sh --tokens=`, typically on the move to review/done. |
+| `effort_seconds` | int | no | `0` | Banked wall-clock the card has spent in the `in_progress` column, summed across every stint. Accounted automatically. See [Effort accounting](#effort-accounting). |
+| `effort_started_at` | ISO timestamp \| null | no | `null` | When the *current* in_progress stint began; `null` whenever the card is not in_progress. The live clock. |
 | `notes` | Note[] | no | `[]` | Append-only log; see schema below. |
 | `subtasks` | string[] | no | `[]` | Reserved for v1; v0 leaves this empty. |
 | `created_at` | ISO timestamp | yes | (auto) | UTC, set on creation. |
@@ -56,6 +64,16 @@ A card is a JSON object inside the `kanban-cards` array. The CLI scripts create,
 - **`in_progress`** — actively being worked. `claim.sh` moves a card here by default. Conflicts on claim (different agent already assigned) exit 2.
 - **`review`** — work is done from Claude's perspective; the human should glance and approve, comment, or kick back to `in_progress`. The assignment is preserved so it's visible who produced the work.
 - **`done`** — finished and accepted. Assignment is preserved so credit is visible.
+
+## Effort accounting
+
+`effort_seconds` measures **active** time — the wall-clock a card spends in the `in_progress` column, not the raw span from claim to done. A card that's claimed Monday and finished Friday but only worked for 30 minutes reads `30m`, not four days.
+
+Two fields carry it. The clock **starts** when a card enters `in_progress` (`effort_started_at` is stamped) and **banks** when it leaves (`effort_seconds += now − effort_started_at`, then `effort_started_at` is cleared). Moving through review and back to in_progress resumes it; the stints add up. Transitions that don't touch `in_progress` (e.g. `todo → review`, `review → done`) leave the clock alone.
+
+The total effort shown anywhere is `effort_seconds + (now − effort_started_at)` when the clock is running, so a card actively in progress shows a live figure (the board and `list.sh` mark a running clock — a blue chip in the browser, a trailing `*` in the terminal).
+
+This logic lives in one place per surface so the CLI and browser never disagree: `apply_effort_transition` in `scripts/rwa_splice.py` (fired by any status-changing `update`, so `move`, `claim`, and `assign --move` all account identically) and its mirror `applyEffortTransition` in `seeds/kanban-body.html` (fired when a human drags a card, and preserved through the file↔browser reconcile).
 
 ## Id format
 

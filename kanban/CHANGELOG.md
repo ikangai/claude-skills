@@ -2,6 +2,38 @@
 
 All notable changes to the kanban skill are documented here.
 
+## 2026-07-06
+
+### Added
+
+- **Per-card model / effort / tokens tracking.** Cards now carry four new
+  fields — `model` (free-form, so any vendor fits), `tokens` (total tokens the
+  task needed), `effort_seconds` (banked *active* time in the in_progress
+  column), and `effort_started_at` (the running clock). The board and
+  `kanban list` render `model / effort / tokens` chips per card, with a live
+  indicator while the clock runs.
+  - `claim.sh --model=<name>` stamps the working model (falls back to
+    `$KANBAN_MODEL`); moving a card into in_progress starts its effort clock.
+  - `move.sh <id> <status> --tokens=<n>` records the token total, typically on
+    the move to review/done.
+  - **Effort is automatic:** every status change banks or starts the
+    in_progress clock, so `effort_seconds` accumulates active working time
+    across pauses in review — no flag needed. It measures active time, not the
+    raw claim→done span, so a card parked overnight doesn't inflate. The
+    accounting lives in one place per surface (`apply_effort_transition` in
+    `rwa_splice.py`, mirrored as `applyEffortTransition` in the seed) so CLI
+    moves and human browser-drags agree, and dragged-card timing survives the
+    file↔browser reconcile.
+
+### Changed
+
+- **`upgrade.sh` generation marker rotated** to `applyEffortTransition`, so
+  boards built on the 2026-06-10 seed are detected as stale and rebuilt onto
+  the new render. The staleness check now scopes its marker search to the
+  board's runtime, excluding the embedded cards JSON — a card whose own text
+  mentions the marker can no longer make a stale board look current and get
+  silently skipped.
+
 ## 2026-06-10
 
 ### Added

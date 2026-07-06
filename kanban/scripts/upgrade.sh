@@ -53,13 +53,38 @@ fi
 
 # Generation check: a marker identifier present in the current seed body but
 # absent from older generations. Kept in one place so future seeds only need
-# this line changed if the marker ever rotates.
-GEN_MARKER="draggedKey"
+# this line changed if the marker ever rotates. Rotate it whenever the seed's
+# render/runtime changes in a way deployed boards should pick up.
+#   draggedKey            → file↔browser sync generation (2026-06)
+#   applyEffortTransition → model / effort / tokens tracking (2026-07)
+GEN_MARKER="applyEffortTransition"
 if ! grep -q "$GEN_MARKER" "$SEED_BODY"; then
   echo "kanban upgrade: seed body lacks generation marker '$GEN_MARKER' — refusing to guess." >&2
   exit 1
 fi
-if grep -q "$GEN_MARKER" "$BOARD" && [[ $FORCE -eq 0 ]]; then
+
+# Detect the marker only in the board's RUNTIME, not in the cards JSON. The
+# marker is a code identifier, but a card's own text (a note or title that
+# happens to mention it) would otherwise make a stale board look current and
+# get silently skipped. Excise the <script id="kanban-cards"> block first, then
+# look. (Block delimiters mirror rwa_splice.py's START/END.)
+board_on_current_gen () {
+  python3 - "$1" "$GEN_MARKER" <<'PY'
+import sys
+text = open(sys.argv[1], encoding='utf-8').read()
+marker = sys.argv[2]
+start_tag = '<script type="application/json" id="kanban-cards">'
+end_tag = '<\\/script>'   # cards block closes with the escaped form on disk
+i = text.find(start_tag)
+if i != -1:
+    j = text.find(end_tag, i)
+    if j != -1:
+        text = text[:i] + text[j + len(end_tag):]   # drop the cards JSON region
+sys.exit(0 if marker in text else 1)
+PY
+}
+
+if board_on_current_gen "$BOARD" && [[ $FORCE -eq 0 ]]; then
   echo "$BOARD is already on the current seed generation; nothing to do. (--force to rebuild anyway)" >&2
   echo "$BOARD"
   exit 0

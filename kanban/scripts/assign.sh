@@ -31,7 +31,7 @@ MOVE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --move=*) MOVE="${1#*=}"; shift ;;
-    --move)   MOVE="$2"; shift 2 ;;
+    --move)   [[ $# -ge 2 ]] || { echo "kanban assign: --move needs a value" >&2; exit 1; }; MOVE="$2"; shift 2 ;;
     -*) echo "kanban assign: unknown flag $1" >&2; exit 1 ;;
     *)  if   [[ -z "$CARD_ID" ]]; then CARD_ID="$1"
         elif [[ -z "$AGENT"   ]]; then AGENT="$1"
