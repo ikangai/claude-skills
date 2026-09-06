@@ -1,5 +1,17 @@
 # Why the rules are what they are
 
+## The principle first
+
+> Agree on the outcome, the constraints, and what would count as evidence of success. Let the agent choose the implementation, make its consequential choices visible, and use concrete alternatives to resolve questions of taste. The person steers through judgment and feedback.
+
+That is the Omakase principle. It is model-independent (it works with any frontier or open-weight model, and with some adjustment with a human contractor, who has always written the menu under the name "assumptions"). The workflow in SKILL.md is one set of practices chosen to put it into effect; none of them follow logically from it, and a different chef could pick different ones.
+
+Two boundaries the principle respects:
+- Domains where the method *is* the product (regulated, safety-critical, audited code) are out of scope. The skill declines when a spec or ticket exists for the same reason.
+- The menu makes assumptions contestable; it does not make them safe. Evidence of success comes from the check named in the menu, not from review.
+
+## Where the practices come from
+
 Paraphrased from DHH's account (Lex Fridman Podcast #501, 2026) of building Omarchy Quattro with agents writing 100% of the code. Read this when a SKILL.md rule feels arbitrary and you're tempted to skip it.
 
 ## Vague first, then interact (rules 1–3)
@@ -22,7 +34,7 @@ Shopify's CTO traced production incidents back to their PRs and found agent-revi
 
 ## Physics, not precedent (rule 7)
 
-A new Mac needed 42 minutes of updates before it could be used; a new Windows laptop, 95 minutes. A Commodore 64 was ready in under a second. Omarchy went from "15 minutes would be great" to a 45-second world record by refusing to treat the incumbent as the bar. The floor is the drive's 7 GB/s and a 5.8 GB payload; everything above that is backlog. Wins came from boring places: a 200 MB font package trimmed to the 16 MB actually used, packages recompressed with zstd, preloading while the user answers setup questions. The McLaren attitude — someone obsessing over 370 grams on a 1,300 kg car — is the right one when the user has named a number.
+A new Mac needed 42 minutes of updates before it could be used; a new Windows laptop, 95 minutes. A Commodore 64 was ready in under a second. Omarchy went from "15 minutes would be great" to a 45-second world record by refusing to treat the incumbent as the bar. The floor is the drive's 7 GB/s and a 5.8 GB payload; knowing it is what said 45 seconds was reachable. The skill borrows the method but bounds the ambition: the backlog runs from where you are to the number the user named, and going past it is an offer, not an obligation. Wins came from boring places: a 200 MB font package trimmed to the 16 MB actually used, packages recompressed with zstd, preloading while the user answers setup questions. The McLaren attitude — someone obsessing over 370 grams on a 1,300 kg car — is the right one when the user has named a number.
 
 ## Plate it (rule 8)
 
