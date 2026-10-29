@@ -11,6 +11,7 @@ A collection of skills for Claude Code.
 | [kanban](./kanban/) | Per-project visual kanban board for Claude Code, backed by a self-contained [rewritable](https://github.com/ikangai/rewritable) HTML file. Cards have status, priority, tags, assignee, notes. CLI for Claude, drag-and-drop in the browser for humans. [Changelog](./kanban/CHANGELOG.md). |
 | [right-sizing-model-selection](./right-sizing-model-selection/) | Routes every task to the cheapest model that meets the quality bar — Claude tiers, local LM Studio models, and OpenRouter — using empirical probing, public-benchmark priors, and a persistent per-machine knowledge base instead of guesses. |
 | [omakase](./omakase/) | Chef's-choice build workflow for fuzzy software requests: reads the brief as a mood, states success criteria and its assumptions as a vetoable menu, serves a runnable first bite, offers three concrete tastings at every taste fork, then runs the evidence check, a mandatory simplify pass, and an independent second opinion before plating. [Changelog](./omakase/CHANGELOG.md). |
+| [write-for-humans](./write-for-humans/) | Writes and revises prose so the intended reader can follow it on the first reading, while preserving meaning, qualifications, and necessary detail. Covers answers, docs, READMEs, emails, commit messages, and code comments. |
 
 ## Installation
 
